@@ -359,6 +359,7 @@ def generate_signals(
         return merged_klines[merged_idx]["raw_index"]
 
     # ── B1 / S1：背驰买卖点 ────────────────────────────────────────────────
+    first_point_bi: Dict[int, str] = {}   # bi index -> "B1"/"S1"，供下面 B2/S2 使用
     for i, bi in enumerate(bis):
         end_idx = bi["end"]["index"]        # 合併後 index（給中枢比較用）
         raw_end_idx = to_raw(end_idx)        # 原始 index（給進場/邊界判斷用）
@@ -396,6 +397,7 @@ def generate_signals(
                 "reason": "第一类买点：底背驰",
                 "fractal_price": frac_low, "fractal_time": bi["end"]["time"],
             })
+            first_point_bi[i] = "B1"
 
         elif bi["direction"] == "up" and bi["end"]["type"] == "top" and divergence:
             # 顶背驰 → 第一类卖点
@@ -413,6 +415,51 @@ def generate_signals(
                 "entry": entry, "sl": sl, "tp": tp,
                 "reason": "第一类卖点：顶背驰",
                 "fractal_price": frac_high, "fractal_time": bi["end"]["time"],
+            })
+            first_point_bi[i] = "S1"
+
+    # ── B2 / S2：第一类买卖点後，次級别回調不創新低/新高 ─────────────────────
+    # B2：bi[i]是B1（向下笔）；bi[i+1]是次級别反彈（向上，笔交替保證方向）；
+    #     bi[i+2]再次下跌，若這次的低點沒有跌破bi[i]的低點，該笔結束點即為B2。
+    # S2 為鏡像（bi[i]是S1，bi[i+2]反彈不創新高）。
+    for i, sig_type in first_point_bi.items():
+        if i + 2 >= len(bis):
+            continue
+        b0, b2_bi = bis[i], bis[i + 2]
+        raw_end_idx = to_raw(b2_bi["end"]["index"])
+        if raw_end_idx >= n - 2:
+            continue
+        entry, ei, et = entry_at(raw_end_idx)
+
+        if sig_type == "B1" and b2_bi["end_price"] > b0["end_price"]:
+            sl = round(b2_bi["end_price"] * 0.9970, 2)
+            tp_raw = b2_bi["start_price"]
+            zs_res = [z["zh"] for z in zhongshu_list
+                      if z["zh"] > entry and z["start_index"] < b2_bi["end"]["index"]]
+            tp = min(zs_res) if zs_res else tp_raw
+            if tp <= entry:
+                tp = round(entry + (entry - sl) * 2, 4)
+            signals.append({
+                "index": ei, "time": et,
+                "type": "B2", "side": "BUY",
+                "entry": entry, "sl": sl, "tp": tp,
+                "reason": "第二类买点：B1後次級别回調不創新低",
+                "fractal_price": b2_bi["end_price"], "fractal_time": b2_bi["end"]["time"],
+            })
+        elif sig_type == "S1" and b2_bi["end_price"] < b0["end_price"]:
+            sl = round(b2_bi["end_price"] * 1.0030, 2)
+            tp_raw = b2_bi["start_price"]
+            zs_sup = [z["zl"] for z in zhongshu_list
+                      if z["zl"] < entry and z["start_index"] < b2_bi["end"]["index"]]
+            tp = max(zs_sup) if zs_sup else tp_raw
+            if tp >= entry:
+                tp = round(entry - (sl - entry) * 2, 4)
+            signals.append({
+                "index": ei, "time": et,
+                "type": "S2", "side": "SELL",
+                "entry": entry, "sl": sl, "tp": tp,
+                "reason": "第二类卖点：S1後次級别反彈不創新高",
+                "fractal_price": b2_bi["end_price"], "fractal_time": b2_bi["end"]["time"],
             })
 
     # ── B3 / S3：中枢突破回踩（一律在原始K棒上掃描，確保捉到真實突破/回踩時刻）───
