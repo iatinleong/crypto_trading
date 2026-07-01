@@ -55,6 +55,46 @@ def compute_macd(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# K線包含關係處理 (Inclusion)
+# ════════════════════════════════════════════════════════════════════════════
+
+def handle_inclusion(klines: List[Dict]) -> List[Dict]:
+    """
+    若 Kᵢ 與 Kᵢ₊₁ 存在包含關係（一根的高低點完全包住另一根），依當前趨勢方向合併：
+    向上取高高、低高（max/max）；向下取低低、高低（min/min）。合併後K線繼承較新
+    那根的 time，並記錄 raw_index = 該合併結果最後吞入的原始K棒 index，供下游
+    需要「回到原始K線」的邏輯（精確進場價、B3/S3 原始突破掃描）換算座標。
+    """
+    if not klines:
+        return []
+    result: List[Dict] = [{**klines[0], "raw_index": 0}]
+    direction = 0   # 1=向上, -1=向下；尚未確立趨勢時預設視為向上
+
+    for i in range(1, len(klines)):
+        cur = klines[i]
+        last = result[-1]
+        contains = (last["high"] >= cur["high"] and last["low"] <= cur["low"]) or \
+                   (last["high"] <= cur["high"] and last["low"] >= cur["low"])
+
+        if contains:
+            if direction >= 0:
+                new_high, new_low = max(last["high"], cur["high"]), max(last["low"], cur["low"])
+            else:
+                new_high, new_low = min(last["high"], cur["high"]), min(last["low"], cur["low"])
+            result[-1] = {
+                **last,
+                "high": new_high, "low": new_low,
+                "close": cur["close"], "time": cur["time"],
+                "raw_index": i,
+            }
+        else:
+            direction = 1 if cur["high"] > last["high"] else -1
+            result.append({**cur, "raw_index": i})
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 顶底分型 (Fractal)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -204,23 +244,34 @@ def _prev_same_dir(bis: List[Dict], idx: int) -> Optional[Dict]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def generate_signals(
-    klines:  List[Dict],
-    bis:     List[Dict],
+    raw_klines:    List[Dict],
+    merged_klines: List[Dict],
+    bis:           List[Dict],
     zhongshu_list: List[Dict],
-    hist:    List[Optional[float]],
+    hist:          List[Optional[float]],
 ) -> List[Dict]:
+    """
+    hist 是在 merged_klines 上算的 MACD 柱狀圖（跟 bis/zhongshu_list 同屬「合併後」
+    index 空間），只用於背驰面積比較。實際決定進場價格/時間、以及 B3/S3
+    的突破/回踩掃描，一律換算回 raw_klines 的座標（透過 to_raw()），
+    因為合併後一根K線可能吞掉好幾根真實K棒，不能拿來當精確進場時機。
+    """
     signals: List[Dict] = []
-    n = len(klines)
+    n = len(raw_klines)
 
-    def entry_at(idx: int) -> Tuple[float, int, int]:
-        """下根 K 棒開盤作為入場。"""
-        ni = min(idx + 1, n - 1)
-        return klines[ni]["open"], ni, klines[ni]["time"]
+    def entry_at(raw_idx: int) -> Tuple[float, int, int]:
+        """下根原始K棒開盤作為入場。"""
+        ni = min(raw_idx + 1, n - 1)
+        return raw_klines[ni]["open"], ni, raw_klines[ni]["time"]
+
+    def to_raw(merged_idx: int) -> int:
+        return merged_klines[merged_idx]["raw_index"]
 
     # ── B1 / S1：背驰买卖点 ────────────────────────────────────────────────
     for i, bi in enumerate(bis):
-        end_idx = bi["end"]["index"]
-        if end_idx >= n - 2:
+        end_idx = bi["end"]["index"]        # 合併後 index（給中枢比較用）
+        raw_end_idx = to_raw(end_idx)        # 原始 index（給進場/邊界判斷用）
+        if raw_end_idx >= n - 2:
             continue
         prev = _prev_same_dir(bis, i)
         if prev is None:
@@ -233,7 +284,7 @@ def generate_signals(
 
         divergence = curr_area < prev_area * 0.85  # 至少弱 15%
 
-        entry, ei, et = entry_at(end_idx)
+        entry, ei, et = entry_at(raw_end_idx)
 
         if bi["direction"] == "down" and bi["end"]["type"] == "bottom" and divergence:
             # 底背驰 → 第一类买点
@@ -273,22 +324,22 @@ def generate_signals(
                 "fractal_price": frac_high, "fractal_time": bi["end"]["time"],
             })
 
-    # ── B3 / S3：中枢突破回踩 ─────────────────────────────────────────────
+    # ── B3 / S3：中枢突破回踩（一律在原始K棒上掃描，確保捉到真實突破/回踩時刻）───
     used: set = set()
     for zs in zhongshu_list:
-        zs_end = zs["end_index"]
         if zs["zh"] <= zs["zl"]:
             continue
+        zs_end = to_raw(zs["end_index"])
         search_end = min(zs_end + 60, n - 2)
         broke_up = broke_dn = False
 
         for j in range(zs_end, search_end):
-            k = klines[j]
+            k = raw_klines[j]
 
             if not broke_up and k["close"] > zs["zh"]:
                 broke_up = True
                 for k2i in range(j + 1, min(j + 40, n - 1)):
-                    k2 = klines[k2i]
+                    k2 = raw_klines[k2i]
                     # 回踩至 ZH 附近（wick 觸碰但收盤在 ZH 以上）
                     if k2["low"] < zs["zh"] * 1.003 and k2["close"] > zs["zh"] * 0.997:
                         uid = (zs["start_index"], "B3")
@@ -312,7 +363,7 @@ def generate_signals(
             if not broke_dn and k["close"] < zs["zl"]:
                 broke_dn = True
                 for k2i in range(j + 1, min(j + 40, n - 1)):
-                    k2 = klines[k2i]
+                    k2 = raw_klines[k2i]
                     if k2["high"] > zs["zl"] * 0.997 and k2["close"] < zs["zl"] * 1.003:
                         uid = (zs["start_index"], "S3")
                         if uid in used:
@@ -575,13 +626,19 @@ def full_analysis(
     taker_fee:       float = TAKER_FEE,
     funding_map:     Optional[Dict[int, float]] = None,
 ) -> Dict[str, Any]:
+    # 前端K棒圖 / MACD副圖一律顯示原始K棒，跟回測執行（進場、SL/TP、資金費）用同一份資料
     closes = [k["close"] for k in klines]
     macd_line, sig_line, hist = compute_macd(closes)
 
-    fractals      = detect_fractals(klines)
-    bis           = detect_bi(klines, fractals)
+    # 缠論結構判斷（分型/笔/中枢/背驰）在包含關係處理後的K線上進行，
+    # 避免震盪期間的雜訊分型污染結構；merged_hist 只用於背驰面積比較
+    merged_klines = handle_inclusion(klines)
+    merged_hist   = compute_macd([k["close"] for k in merged_klines])[2]
+
+    fractals      = detect_fractals(merged_klines)
+    bis           = detect_bi(merged_klines, fractals)
     zhongshu_list = detect_zhongshu(bis)
-    signals       = generate_signals(klines, bis, zhongshu_list, hist)
+    signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist)
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
         taker_fee=taker_fee, funding_map=funding_map,
