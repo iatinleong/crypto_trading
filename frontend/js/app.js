@@ -105,8 +105,14 @@ function renderConditions(conditions) {
   for (const type of ['B1', 'S1', 'B3', 'S3']) {
     const c = conditions[type];
     if (!c) continue;
-    html += `<div style="margin-bottom:8px;padding:6px 8px;border-radius:4px;background:${c.all_met ? 'rgba(38,166,154,.15)' : 'rgba(255,255,255,.03)'}">`;
-    html += `<div style="font-weight:600;margin-bottom:4px;${c.all_met ? 'color:#26a69a' : 'color:#c9d1d9'}">${labels[type]}${c.all_met ? ' ✅ 全部滿足' : ''}</div>`;
+    // actionable 直接對照真正的 signals 列表（跟 strategy_loop 下單判斷同一個依據）；
+    // all_met 但不 actionable 代表結構條件曾經成立，但沒有變成一筆「夠新鮮」的真實訊號
+    const stale = c.all_met && !c.actionable;
+    const bg = c.actionable ? 'rgba(38,166,154,.15)' : stale ? 'rgba(240,185,11,.10)' : 'rgba(255,255,255,.03)';
+    const titleColor = c.actionable ? '#26a69a' : stale ? '#f0b90b' : '#c9d1d9';
+    const badge = c.actionable ? ' ✅ 現在可進場' : stale ? ' ⌛ 曾滿足但不是新訊號' : '';
+    html += `<div style="margin-bottom:8px;padding:6px 8px;border-radius:4px;background:${bg}">`;
+    html += `<div style="font-weight:600;margin-bottom:4px;color:${titleColor}">${labels[type]}${badge}</div>`;
     for (const cond of c.conditions) {
       html += `<div style="display:flex;align-items:center;gap:6px;padding:1px 0">
         <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${cond.met ? '#26a69a' : '#30363d'};box-shadow:${cond.met ? '0 0 6px #26a69a' : 'none'}"></span>

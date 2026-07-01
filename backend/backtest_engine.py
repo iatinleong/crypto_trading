@@ -495,6 +495,7 @@ def evaluate_conditions(
     bis:           List[Dict],
     zhongshu_list: List[Dict],
     hist:          List[Optional[float]],
+    signals:       List[Dict],
 ) -> Dict[str, Any]:
     """
     評估「目前最新候選笔/中枢」的進場條件清單——不是產生確認訊號，是給前端
@@ -503,11 +504,27 @@ def evaluate_conditions(
     強度是連續數值，能顯示「目前弱化多少%、還差多少」。
     B3/S3（中枢突破回踩）看最後一個中枢：突破跟回踩是真正有時間先後、會等待
     的階段，各自獨立判斷「向上突破」跟「向下突破」兩條路徑目前走到哪一步。
+
+    「條件結構上滿足」跟「真的會觸發進場」不是同一件事：
+    1) generate_signals() 對「太靠近資料尾端」的笔/中枢事件會直接跳過不產生訊號
+       （需要至少2根K棒的緩衝，避免用還在變動中的資料當進場依據）；
+    2) 就算真的生成了訊號，也可能是好幾天前的舊訊號，只是後面沒有更新的結構
+       蓋掉它。
+    這裡不重新發明一套獨立的新鮮度判斷，而是直接查「這個類型的訊號，在真正
+    的 signals 列表裡最後一次出現、且落在最近2根K棒內」——跟 strategy_loop
+    實際下單用的是同一個判斷依據，checklist 顯示的「可進場」才不會跟真實下
+    單行為互相矛盾。
     """
     result: Dict[str, Any] = {"B1": None, "S1": None, "B3": None, "S3": None}
+    n = len(raw_klines)
+    fresh_cutoff = n - 2   # 跟 strategy_loop 的 `latest["index"] < len(klines)-2` 同一個門檻
 
     def to_raw(merged_idx: int) -> int:
         return merged_klines[merged_idx]["raw_index"]
+
+    def is_actionable(sig_type: str) -> bool:
+        matches = [s for s in signals if s["type"] == sig_type]
+        return bool(matches) and matches[-1]["index"] >= fresh_cutoff
 
     # ── B1 / S1：看最後一笔 ──────────────────────────────────────────────
     if bis:
@@ -536,8 +553,10 @@ def evaluate_conditions(
         else:
             conditions.append({"label": "MACD背驰強度（需 ≥15%）", "met": False})
 
+        all_met = all(c["met"] for c in conditions)
         result[sig_type] = {
-            "all_met":     all(c["met"] for c in conditions),
+            "all_met":     all_met,
+            "actionable":  is_actionable(sig_type),
             "conditions":  conditions,
             "bi_end_time": last_bi["end"]["time"],
         }
@@ -576,8 +595,10 @@ def evaluate_conditions(
                 {"label": f"收盤突破中枢{label_edge}", "met": broke},
                 {"label": "突破後回踩確認", "met": retested},
             ]
+            all_met = all(c["met"] for c in conditions)
             result[sig_type] = {
-                "all_met":    all(c["met"] for c in conditions),
+                "all_met":    all_met,
+                "actionable": is_actionable(sig_type),
                 "conditions": conditions,
                 "zs_zl": zs["zl"], "zs_zh": zs["zh"],
                 "broke_at": broke_at, "retest_at": retest_at,
@@ -834,7 +855,7 @@ def full_analysis(
     # 是較快、較細的訊號），兩者是纏論裡並存但不同顆粒度的合法訊號類型
     zhongshu_list = detect_zhongshu(duans if len(duans) >= 3 else bis)
     signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist)
-    conditions    = evaluate_conditions(klines, merged_klines, bis, zhongshu_list, merged_hist)
+    conditions    = evaluate_conditions(klines, merged_klines, bis, zhongshu_list, merged_hist, signals)
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
         taker_fee=taker_fee, funding_map=funding_map,
