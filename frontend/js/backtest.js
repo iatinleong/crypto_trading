@@ -1,7 +1,7 @@
 /* 賽博纏論 Backtest Dashboard */
 'use strict';
 
-const API = 'http://localhost:8000';
+const API = 'http://localhost:8010';
 
 // ── 圖表實例 ───────────────────────────────────────────────────────────────
 let mainChart, candleSeries, volumeSeries;

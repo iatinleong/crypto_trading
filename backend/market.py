@@ -50,6 +50,25 @@ class MarketClient:
             res.raise_for_status()
             return float(res.json()["price"])
 
+    async def get_current_funding_rate(self, symbol: str) -> dict:
+        """
+        取得目前（下一次結算前）的預測資金費率與標記價格。
+        Binance 在結算當下即以這個 lastFundingRate 入帳。
+        """
+        async with httpx.AsyncClient(**_CLIENT) as client:
+            res = await client.get(
+                f"{MARKET_URL}/fapi/v1/premiumIndex",
+                params={"symbol": symbol},
+                timeout=10,
+            )
+            res.raise_for_status()
+            data = res.json()
+            return {
+                "mark_price": float(data["markPrice"]),
+                "funding_rate": float(data["lastFundingRate"]),
+                "next_funding_time": int(data["nextFundingTime"]) // 1000,
+            }
+
     async def get_funding_rates(self, symbol: str, start_time: int, end_time: int) -> dict[int, float]:
         """
         取得 [start_time, end_time] 範圍內的歷史資金費率。

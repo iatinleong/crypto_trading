@@ -354,30 +354,34 @@ def run_backtest(
     """
     funding_map: 由 Binance /fapi/v1/fundingRate 取得的歷史費率 dict。
                  若為 None 則沿用固定 FUNDING_RATE 常數（0.01%/8h）。
+
+    資金費每 8h 在 00:00 / 08:00 / 16:00 UTC 結算，且只在結算當下持有倉位才會
+    被收取或支付（正費率：多付空收；負費率：空付多收）。故以 UTC 絕對時間切
+    出的「結算 bucket」判斷是否跨過結算點，而非以進場後經過幾根K棒判斷。
     """
-    hours_per_candle    = INTERVAL_HOURS.get(interval, 1.0)
-    candles_per_funding = max(1, round(8.0 / hours_per_candle))
+    FUNDING_INTERVAL_SEC = 8 * 3600
 
     # 將 funding_map 的 key 排序，用於二分搜尋
     fund_times = sorted(funding_map.keys()) if funding_map else []
 
-    def _get_funding(candle_time: int, notional: float) -> float:
-        """取得最近一筆資金費率並計算費用。"""
+    def _funding_rate_at(settle_time: int) -> float:
+        """取得 <= settle_time 的最近一筆真實資金費率（無資料則用固定值）。"""
         if not funding_map or not fund_times:
-            return notional * FUNDING_RATE
-        # 找 <= candle_time 的最新結算
+            return FUNDING_RATE
         lo, hi = 0, len(fund_times) - 1
         idx = -1
         while lo <= hi:
             mid = (lo + hi) // 2
-            if fund_times[mid] <= candle_time:
+            if fund_times[mid] <= settle_time:
                 idx = mid; lo = mid + 1
             else:
                 hi = mid - 1
-        if idx == -1:
-            return notional * FUNDING_RATE
-        rate = funding_map[fund_times[idx]]
-        return notional * abs(rate)   # 空單費率可為負但仍為成本（取絕對值保守估計）
+        return funding_map[fund_times[idx]] if idx != -1 else FUNDING_RATE
+
+    def _get_funding(settle_time: int, notional: float, side: str) -> float:
+        """依方向計算單次結算的資金費用（正值＝成本，負值＝收入）。"""
+        rate = _funding_rate_at(settle_time)
+        return notional * rate if side == "BUY" else -notional * rate
 
     capital      = initial_capital
     trades:       List[Dict] = []
@@ -391,13 +395,15 @@ def run_backtest(
 
         # ── 管理現有倉位 ──────────────────────────────────────────────────
         if active is not None:
-            held = i - active["entry_index"]
 
-            # 資金費率結算（每 candles_per_funding 根一次）
-            if held > 0 and held % candles_per_funding == 0:
+            # 資金費率結算：只在真正跨過 00:00/08:00/16:00 UTC 結算點時收付
+            cur_bucket = k["time"] // FUNDING_INTERVAL_SEC
+            if cur_bucket > active["last_funding_bucket"]:
                 notional_now = active["qty"] * k["close"]
-                funding = _get_funding(k["time"], notional_now)
-                active["funding_fees"] += funding
+                for b in range(active["last_funding_bucket"] + 1, cur_bucket + 1):
+                    settle_time = b * FUNDING_INTERVAL_SEC
+                    active["funding_fees"] += _get_funding(settle_time, notional_now, active["side"])
+                active["last_funding_bucket"] = cur_bucket
 
             # 止盈 / 止損判斷
             hit_sl = hit_tp = False
@@ -477,6 +483,7 @@ def run_backtest(
                 "leverage":    leverage,
                 "entry_fee":   entry_fee,
                 "funding_fees": 0.0,
+                "last_funding_bucket": k["time"] // FUNDING_INTERVAL_SEC,
                 "entry_time":  k["time"],
                 "entry_index": i,
                 "reason":      sig["reason"],

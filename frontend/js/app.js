@@ -1,4 +1,4 @@
-const API = 'http://localhost:8000';
+const API = 'http://localhost:8010';
 
 let chart, candleSeries, volumeSeries;
 let ws = null;
@@ -64,7 +64,7 @@ function connectWS() {
   if (ws) { ws.onclose = null; ws.close(); }
 
   // 連本地後端 WS（後端透過 REST poll Binance 再推送）
-  ws = new WebSocket(`ws://localhost:8000/ws/${currentSymbol}/${currentInterval}`);
+  ws = new WebSocket(`ws://localhost:8010/ws/${currentSymbol}/${currentInterval}`);
 
   const dot = document.getElementById('ws-status');
   const countEl = document.getElementById('ws-count');

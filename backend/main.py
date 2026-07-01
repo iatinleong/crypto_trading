@@ -21,6 +21,25 @@ price_cache: dict[str, float] = {}
 ws_clients: dict[str, set[WebSocket]] = {}
 
 
+async def funding_loop():
+    """每分鐘檢查一次是否跨過 00:00/08:00/16:00 UTC 結算點，對持倉收付資金費。"""
+    while True:
+        try:
+            buckets = engine.due_funding_buckets()
+            if buckets:
+                for symbol in list(engine.positions.keys()):
+                    try:
+                        info = await market.get_current_funding_rate(symbol)
+                        for _ in buckets:
+                            engine.apply_funding(symbol, info["funding_rate"], info["mark_price"])
+                    except Exception as e:
+                        print(f"[funding] {symbol}: {e}")
+                save_state(engine.to_dict())
+        except Exception as e:
+            print(f"[funding] {e}")
+        await asyncio.sleep(60)
+
+
 async def poll_loop():
     """每 500ms 輪詢 Binance REST → 推送給前端（繞過 WS 封鎖）"""
     while True:
@@ -56,8 +75,10 @@ async def poll_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(poll_loop())
+    funding_task = asyncio.create_task(funding_loop())
     yield
     task.cancel()
+    funding_task.cancel()
 
 
 app = FastAPI(title="賽博纏論 Dashboard", lifespan=lifespan)
