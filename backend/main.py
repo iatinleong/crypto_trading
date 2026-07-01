@@ -66,7 +66,7 @@ async def strategy_loop():
                 cfg["last_checked_at"] = time.time()
                 cfg["last_analysis"] = {
                     "bis": result["bis"], "duans": result["duans"], "zhongshu": result["zhongshu"],
-                    "conditions": result["conditions"],
+                    "conditions": result["conditions"], "signals": result["signals"],
                 }
                 signals = result["signals"]
                 if not signals:

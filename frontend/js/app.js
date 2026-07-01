@@ -161,6 +161,20 @@ function drawLiveOverlay() {
     }
   }
 
+  // ── 歷史訊號（不管有沒有真的下單，只要幾何上發生過就標出來）───────────────
+  // 目的：讓「這個訊號是不是新鮮」變成一眼可見的事實（箭頭在圖上多久以前），
+  // 不用只靠 checklist 的文字/顏色去解釋。
+  if (cachedLiveAnalysis) {
+    for (const sig of cachedLiveAnalysis.signals || []) {
+      const isBuy = sig.side === 'BUY';
+      markers.push({
+        time: sig.time, position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? 'rgba(76,175,80,0.55)' : 'rgba(244,67,54,0.55)',
+        shape: isBuy ? 'arrowUp' : 'arrowDown', text: sig.type, size: 0.8,
+      });
+    }
+  }
+
   function drawSlTpLine(x1, x2, sl, tp) {
     if (x1 == null || x2 == null) return;
     if (sl != null) {
