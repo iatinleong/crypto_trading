@@ -7,7 +7,7 @@ const API = window.location.origin;
 // 週期對應每根K棒的小時數（跟後端 backtest_engine.py 的 INTERVAL_HOURS 保持一致）
 const INTERVAL_HOURS = { '15m': 15/60, '30m': 0.5, '1h': 1, '4h': 4, '1d': 24 };
 // 區間 token 對應的總小時數
-const RANGE_HOURS = { '3m': 3*30*24, '6m': 6*30*24, '1y': 365*24, '2y': 2*365*24, '5y': 5*365*24 };
+const RANGE_HOURS = { '3m': 3*30*24, '6m': 6*30*24, '1y': 365*24, '2y': 2*365*24, '3y': 3*365*24 };
 
 function resolveLimit(rawValue, interval) {
   if (RANGE_HOURS[rawValue]) {
