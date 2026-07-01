@@ -486,6 +486,107 @@ def generate_signals(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# 進場條件檢查清單 (Entry Condition Checklist)
+# ════════════════════════════════════════════════════════════════════════════
+
+def evaluate_conditions(
+    raw_klines:    List[Dict],
+    merged_klines: List[Dict],
+    bis:           List[Dict],
+    zhongshu_list: List[Dict],
+    hist:          List[Optional[float]],
+) -> Dict[str, Any]:
+    """
+    評估「目前最新候選笔/中枢」的進場條件清單——不是產生確認訊號，是給前端
+    做「條件滿足亮燈、不滿足暗著」用的即時進度視圖。
+    B1/S1（背驰）看最後一笔：方向/分型類型是即時已知的事實，只有 MACD 背驰
+    強度是連續數值，能顯示「目前弱化多少%、還差多少」。
+    B3/S3（中枢突破回踩）看最後一個中枢：突破跟回踩是真正有時間先後、會等待
+    的階段，各自獨立判斷「向上突破」跟「向下突破」兩條路徑目前走到哪一步。
+    """
+    result: Dict[str, Any] = {"B1": None, "S1": None, "B3": None, "S3": None}
+
+    def to_raw(merged_idx: int) -> int:
+        return merged_klines[merged_idx]["raw_index"]
+
+    # ── B1 / S1：看最後一笔 ──────────────────────────────────────────────
+    if bis:
+        last_bi = bis[-1]
+        prev = _prev_same_dir(bis, len(bis) - 1)
+        is_b1 = last_bi["direction"] == "down"
+        sig_type = "B1" if is_b1 else "S1"
+        want_frac = "bottom" if is_b1 else "top"
+
+        conditions = [
+            {"label": f"笔方向{'向下' if is_b1 else '向上'}", "met": True},
+            {"label": f"笔結束於{'底' if is_b1 else '頂'}分型", "met": last_bi["end"]["type"] == want_frac},
+            {"label": "有前一笔可比較背驰", "met": prev is not None},
+        ]
+        if prev is not None:
+            curr_area = _macd_area(last_bi, hist)
+            prev_area = _macd_area(prev, hist)
+            if prev_area > 1e-9:
+                weaken_pct = (1 - curr_area / prev_area) * 100
+                conditions.append({
+                    "label": f"MACD背驰強度 {weaken_pct:.1f}%（需 ≥15%）",
+                    "met": weaken_pct >= 15,
+                })
+            else:
+                conditions.append({"label": "前一笔MACD面積有效", "met": False})
+        else:
+            conditions.append({"label": "MACD背驰強度（需 ≥15%）", "met": False})
+
+        result[sig_type] = {
+            "all_met":     all(c["met"] for c in conditions),
+            "conditions":  conditions,
+            "bi_end_time": last_bi["end"]["time"],
+        }
+
+    # ── B3 / S3：看最後一個中枢，向上/向下突破各自獨立判斷 ────────────────
+    if zhongshu_list:
+        zs = zhongshu_list[-1]
+        raw_zs_end = to_raw(zs["end_index"])
+        n = len(raw_klines)
+        search_end = min(raw_zs_end + 60, n - 2)
+
+        for side, sig_type, label_edge in (("up", "B3", "上緣ZH"), ("down", "S3", "下緣ZL")):
+            broke = retested = False
+            broke_at = retest_at = None
+            for j in range(raw_zs_end, search_end):
+                k = raw_klines[j]
+                crossed = k["close"] > zs["zh"] if side == "up" else k["close"] < zs["zl"]
+                if not crossed:
+                    continue
+                broke = True
+                broke_at = k["time"]
+                for k2i in range(j + 1, min(j + 40, n - 1)):
+                    k2 = raw_klines[k2i]
+                    if side == "up":
+                        hit = k2["low"] < zs["zh"] * 1.003 and k2["close"] > zs["zh"] * 0.997
+                    else:
+                        hit = k2["high"] > zs["zl"] * 0.997 and k2["close"] < zs["zl"] * 1.003
+                    if hit:
+                        retested = True
+                        retest_at = k2["time"]
+                        break
+                break
+
+            conditions = [
+                {"label": "存在有效中枢", "met": True},
+                {"label": f"收盤突破中枢{label_edge}", "met": broke},
+                {"label": "突破後回踩確認", "met": retested},
+            ]
+            result[sig_type] = {
+                "all_met":    all(c["met"] for c in conditions),
+                "conditions": conditions,
+                "zs_zl": zs["zl"], "zs_zh": zs["zh"],
+                "broke_at": broke_at, "retest_at": retest_at,
+            }
+
+    return result
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 回測引擎 (Backtest Engine)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -733,6 +834,7 @@ def full_analysis(
     # 是較快、較細的訊號），兩者是纏論裡並存但不同顆粒度的合法訊號類型
     zhongshu_list = detect_zhongshu(duans if len(duans) >= 3 else bis)
     signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist)
+    conditions    = evaluate_conditions(klines, merged_klines, bis, zhongshu_list, merged_hist)
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
         taker_fee=taker_fee, funding_map=funding_map,
@@ -776,6 +878,7 @@ def full_analysis(
             "histogram":   hist,
         },
         "signals": signals,
+        "conditions": conditions,
         # 回測結果
         **bt,
     }
