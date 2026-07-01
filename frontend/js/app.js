@@ -87,6 +87,35 @@ async function refreshLiveAnalysis() {
     cachedLiveAnalysis = null;
   }
   drawLiveOverlay();
+  renderConditions(cachedLiveAnalysis ? cachedLiveAnalysis.conditions : null);
+}
+
+function renderConditions(conditions) {
+  const el = document.getElementById('conditions-panel');
+  if (!el) return;
+  if (!conditions) {
+    el.textContent = '未啟動策略，無資料';
+    return;
+  }
+  const labels = {
+    B1: '第一類買點 B1（底背馳）', S1: '第一類賣點 S1（頂背馳）',
+    B3: '第三類買點 B3（突破回踩）', S3: '第三類賣點 S3（跌破反抽）',
+  };
+  let html = '';
+  for (const type of ['B1', 'S1', 'B3', 'S3']) {
+    const c = conditions[type];
+    if (!c) continue;
+    html += `<div style="margin-bottom:8px;padding:6px 8px;border-radius:4px;background:${c.all_met ? 'rgba(38,166,154,.15)' : 'rgba(255,255,255,.03)'}">`;
+    html += `<div style="font-weight:600;margin-bottom:4px;${c.all_met ? 'color:#26a69a' : 'color:#c9d1d9'}">${labels[type]}${c.all_met ? ' ✅ 全部滿足' : ''}</div>`;
+    for (const cond of c.conditions) {
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:1px 0">
+        <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${cond.met ? '#26a69a' : '#30363d'};box-shadow:${cond.met ? '0 0 6px #26a69a' : 'none'}"></span>
+        <span style="color:${cond.met ? '#c9d1d9' : '#6e7681'}">${cond.label}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  el.innerHTML = html || '目前笔/中枢資料還不夠，無法評估條件';
 }
 
 function drawLiveOverlay() {
@@ -505,6 +534,7 @@ async function toggleStrategy() {
       });
     }
     refreshStrategyStatus();
+    refreshLiveAnalysis();
   } catch (e) {
     document.getElementById('strategy-msg').textContent = '連線失敗';
   }
