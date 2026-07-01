@@ -162,6 +162,97 @@ def detect_bi(klines: List[Dict], fractals: List[Dict]) -> List[Dict]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# 線段 (Xianduan / Segment) — 特徵序列法
+# ════════════════════════════════════════════════════════════════════════════
+
+def _merge_feature_seq(seq_bis: List[Dict]) -> List[Dict]:
+    """
+    對特征序列（一串同方向的笔，各笔視為一根「K線」）做包含處理，
+    回傳標準特征序列。每個元素同時記錄「高點來自哪一笔」「低點來自哪一笔」，
+    因為合併時高低點可能各自來自不同的原始笔，不能只記一個代表笔。
+    """
+    def hilo(b: Dict) -> Tuple[float, float]:
+        return max(b["start_price"], b["end_price"]), min(b["start_price"], b["end_price"])
+
+    if not seq_bis:
+        return []
+    up = seq_bis[0]["direction"] == "up"
+    h0, l0 = hilo(seq_bis[0])
+    result = [{"high": h0, "low": l0, "hi_bi": seq_bis[0], "lo_bi": seq_bis[0]}]
+
+    for bi in seq_bis[1:]:
+        hi, lo = hilo(bi)
+        last = result[-1]
+        contains = (last["high"] >= hi and last["low"] <= lo) or (last["high"] <= hi and last["low"] >= lo)
+        if contains:
+            if up:
+                new_hi, new_hi_bi = (last["high"], last["hi_bi"]) if last["high"] >= hi else (hi, bi)
+                new_lo, new_lo_bi = (last["low"],  last["lo_bi"]) if last["low"]  >= lo else (lo, bi)
+            else:
+                new_hi, new_hi_bi = (last["high"], last["hi_bi"]) if last["high"] <= hi else (hi, bi)
+                new_lo, new_lo_bi = (last["low"],  last["lo_bi"]) if last["low"]  <= lo else (lo, bi)
+            result[-1] = {"high": new_hi, "low": new_lo, "hi_bi": new_hi_bi, "lo_bi": new_lo_bi}
+        else:
+            result.append({"high": hi, "low": lo, "hi_bi": bi, "lo_bi": bi})
+    return result
+
+
+def _feature_fractal_index(seq: List[Dict], want: str) -> Optional[int]:
+    """在標準特征序列裡找第一個符合 want('top'/'bottom') 的分型，回傳中間元素 index。"""
+    for i in range(1, len(seq) - 1):
+        p, c, n = seq[i-1], seq[i], seq[i+1]
+        if want == "top" and p["high"] < c["high"] and n["high"] < c["high"]:
+            return i
+        if want == "bottom" and p["low"] > c["low"] and n["low"] > c["low"]:
+            return i
+    return None
+
+
+def detect_duan(bis: List[Dict]) -> List[Dict]:
+    """
+    線段劃分（特征序列法）：
+    - 線段方向由其第一笔決定；只收集線段內「反方向」的笔組成特征序列。
+    - 特征序列做包含處理成標準特征序列，出現對應分型（上升段找頂分型、
+      下降段找底分型）即為線段結束的候選點，結束點是該分型峰值所屬的那一笔的起點。
+    - 簡化：纏論原著對「特征序列缺口」有更複雜的延遲確認規則（缺口案例本身在
+      纏論社群裡就頗具爭議、不同實作各有版本），這裡不處理缺口延遲，一律以
+      「找到分型即確認」處理——這是常見、可接受的工程簡化，非嚴格原著定義。
+    """
+    if len(bis) < 3:
+        return []
+
+    duans: List[Dict] = []
+    seg_start = 0
+    direction = bis[0]["direction"]
+    i = 2
+
+    while i < len(bis):
+        opp = "down" if direction == "up" else "up"
+        feature_bis = [b for b in bis[seg_start:i+1] if b["direction"] == opp]
+        if len(feature_bis) >= 3:
+            std_seq = _merge_feature_seq(feature_bis)
+            want = "top" if direction == "up" else "bottom"
+            fi = _feature_fractal_index(std_seq, want)
+            if fi is not None:
+                end_bi = std_seq[fi]["hi_bi"] if want == "top" else std_seq[fi]["lo_bi"]
+                end_pos = next(k for k in range(seg_start, i + 1) if bis[k] is end_bi)
+                duans.append({
+                    "start": {"time": bis[seg_start]["start"]["time"], "index": bis[seg_start]["start"]["index"]},
+                    "end":   {"time": end_bi["start"]["time"], "index": end_bi["start"]["index"]},
+                    "direction":   direction,
+                    "start_price": bis[seg_start]["start_price"],
+                    "end_price":   end_bi["start_price"],
+                })
+                seg_start = end_pos
+                direction = opp
+                i = seg_start + 2
+                continue
+        i += 1
+
+    return duans
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 中枢 (Zhongshu / Pivot Zone)
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -637,7 +728,10 @@ def full_analysis(
 
     fractals      = detect_fractals(merged_klines)
     bis           = detect_bi(merged_klines, fractals)
-    zhongshu_list = detect_zhongshu(bis)
+    duans         = detect_duan(bis)
+    # 中枢由線段構造（纏論原著定義），不是直接由笔構造；背驰仍在笔級別判斷（B1/S1
+    # 是較快、較細的訊號），兩者是纏論裡並存但不同顆粒度的合法訊號類型
+    zhongshu_list = detect_zhongshu(duans if len(duans) >= 3 else bis)
     signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist)
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
@@ -665,6 +759,16 @@ def full_analysis(
                 "end_time":   z["end_time"],
             }
             for z in zhongshu_list
+        ],
+        "duans": [
+            {
+                "start_time":  d["start"]["time"],
+                "end_time":    d["end"]["time"],
+                "start_price": d["start_price"],
+                "end_price":   d["end_price"],
+                "direction":   d["direction"],
+            }
+            for d in duans
         ],
         "macd": {
             "macd_line":   macd_line,
