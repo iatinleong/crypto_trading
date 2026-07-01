@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: cyber-chanlun
-    runtime: python
-    plan: free
-    # 不設 rootDir：backend/ 依賴的 frontend/ 在 repo 根目錄的另一個資料夾，
-    # 若 rootDir 設成 backend，frontend 的變動不會觸發自動部署
-    buildCommand: pip install -r backend/requirements.txt
-    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT

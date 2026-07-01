@@ -101,7 +101,6 @@ function initCharts() {
   window.addEventListener('resize', onResize);
   // 重繪 overlay（主圖範圍改變時）
   mainChart.timeScale().subscribeVisibleLogicalRangeChange(() => drawOverlay());
-  mainChart.priceScale('right').subscribeVisiblePriceRangeChange(() => drawOverlay());
 }
 
 function onResize() {

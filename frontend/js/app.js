@@ -45,7 +45,6 @@ function initChart() {
   });
 
   chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawLiveOverlay());
-  chart.priceScale('right').subscribeVisiblePriceRangeChange(() => drawLiveOverlay());
   syncOverlayCanvas();
 }
 
