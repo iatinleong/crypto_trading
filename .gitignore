@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 backend/paper_state.json
+backend/data/
 
 # 版權課程教材，不進 repo
 *.pdf

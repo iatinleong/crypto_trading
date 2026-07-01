@@ -184,9 +184,10 @@ class BacktestRequest(BaseModel):
 @app.post("/api/backtest")
 async def run_backtest_api(req: BacktestRequest):
     try:
-        klines = await market.get_klines(req.symbol, req.interval, min(req.limit, 1500))
+        limit = min(req.limit, 50_000)
+        klines = await market.get_klines_cached(req.symbol, req.interval, limit)
         try:
-            funding_map = await market.get_funding_rates(
+            funding_map = await market.get_funding_rates_cached(
                 req.symbol, klines[0]["time"], klines[-1]["time"]
             )
         except Exception as e:

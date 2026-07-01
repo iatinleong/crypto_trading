@@ -3,6 +3,19 @@
 
 const API = 'http://localhost:8010';
 
+// 週期對應每根K棒的小時數（跟後端 backtest_engine.py 的 INTERVAL_HOURS 保持一致）
+const INTERVAL_HOURS = { '15m': 15/60, '30m': 0.5, '1h': 1, '4h': 4, '1d': 24 };
+// 區間 token 對應的總小時數
+const RANGE_HOURS = { '3m': 3*30*24, '6m': 6*30*24, '1y': 365*24, '2y': 2*365*24, '5y': 5*365*24 };
+
+function resolveLimit(rawValue, interval) {
+  if (RANGE_HOURS[rawValue]) {
+    const hoursPerCandle = INTERVAL_HOURS[interval] || 1;
+    return Math.ceil(RANGE_HOURS[rawValue] / hoursPerCandle);
+  }
+  return parseInt(rawValue);
+}
+
 // ── 圖表實例 ───────────────────────────────────────────────────────────────
 let mainChart, candleSeries, volumeSeries;
 let macdChart, macdHistSeries, macdLineSeries, macdSigSeries;
@@ -313,6 +326,9 @@ function populateStats(s) {
   set('s-avgloss', '-$' + s.avg_loss.toFixed(2), 'neg');
   set('s-dd',      dd.toFixed(2) + '%',  dd < 10 ? 'pos' : dd < 20 ? 'neutral' : 'neg');
   set('s-fees',    '$' + s.total_fees.toFixed(2), 'neg');
+  set('s-trading-fee', '$' + s.total_trading_fee.toFixed(2), 'neg');
+  const ff = s.total_funding_fee;
+  set('s-funding-fee', (ff >= 0 ? '$' : '+$') + Math.abs(ff).toFixed(2), ff >= 0 ? 'neg' : 'pos');
   set('s-init',    '$' + fmt(s.initial_capital), 'neutral');
   set('s-final',   '$' + fmt(s.final_capital), s.final_capital >= s.initial_capital ? 'pos' : 'neg');
 }
@@ -376,7 +392,7 @@ function populateTrades(trades) {
 async function startBacktest() {
   const symbol   = document.getElementById('bt-symbol').value;
   const interval = document.getElementById('bt-interval').value;
-  const limit    = parseInt(document.getElementById('bt-limit').value);
+  const limit    = resolveLimit(document.getElementById('bt-limit').value, interval);
   const capital  = parseFloat(document.getElementById('bt-capital').value);
   const leverage = parseInt(document.getElementById('bt-leverage').value);
   const riskPct  = parseFloat(document.getElementById('bt-risk').value);

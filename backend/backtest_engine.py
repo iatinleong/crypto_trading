@@ -517,6 +517,8 @@ def run_backtest(
     tot_profit = sum(t["pnl"] for t in winners)
     tot_loss   = abs(sum(t["pnl"] for t in losers))
     tot_fees   = sum(t["total_fees"] for t in trades)
+    tot_trading_fee = sum(t["entry_fee"] + t["exit_fee"] for t in trades)
+    tot_funding_fee = sum(t["funding_fees"] for t in trades)
 
     peak  = initial_capital
     max_dd = 0.0
@@ -547,6 +549,8 @@ def run_backtest(
         "rr_ratio":        rr_ratio,
         "max_drawdown":    max_dd,
         "total_fees":      tot_fees,
+        "total_trading_fee": tot_trading_fee,
+        "total_funding_fee": tot_funding_fee,
     }
 
     return {"trades": trades, "equity_curve": equity_curve, "stats": stats}

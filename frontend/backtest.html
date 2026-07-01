@@ -43,14 +43,23 @@
   </div>
 
   <div class="ctrl-group">
-    <label>K棒數</label>
+    <label>K棒數 / 區間</label>
     <select id="bt-limit">
-      <option value="200">200</option>
-      <option value="300">300</option>
-      <option value="500" selected>500</option>
-      <option value="800">800</option>
-      <option value="1000">1000</option>
-      <option value="1500">1500</option>
+      <optgroup label="K棒數">
+        <option value="200">200</option>
+        <option value="300">300</option>
+        <option value="500" selected>500</option>
+        <option value="800">800</option>
+        <option value="1000">1000</option>
+        <option value="1500">1500</option>
+      </optgroup>
+      <optgroup label="依區間換算（依所選週期）">
+        <option value="3m">近 3 個月</option>
+        <option value="6m">近 6 個月</option>
+        <option value="1y">近 1 年</option>
+        <option value="2y">近 2 年</option>
+        <option value="5y">近 5 年</option>
+      </optgroup>
     </select>
   </div>
 
@@ -137,6 +146,8 @@
         <div class="divider"></div>
         <span class="lbl">最大回撤</span>        <span class="val neutral" id="s-dd">—</span>
         <span class="lbl">累計手續費</span>      <span class="val neutral" id="s-fees">—</span>
+        <span class="lbl">├ 交易手續費</span>    <span class="val neutral" id="s-trading-fee">—</span>
+        <span class="lbl">└ 資金費(淨)</span>    <span class="val neutral" id="s-funding-fee">—</span>
         <div class="divider"></div>
         <span class="lbl">初始資金</span>        <span class="val neutral" id="s-init">—</span>
         <span class="lbl">最終資金</span>        <span class="val neutral" id="s-final">—</span>

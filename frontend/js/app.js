@@ -130,6 +130,7 @@ async function refreshAccount() {
     pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${fmt(pnl)}`;
     pnlEl.className = pnl >= 0 ? 'pos' : 'neg';
     document.getElementById('acc-avail').textContent = `$${fmt(d.availableBalance)}`;
+    document.getElementById('acc-fees').textContent = `$${fmt(d.totalFees)}`;
   } catch (e) { /* ignore */ }
 }
 
