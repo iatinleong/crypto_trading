@@ -1,7 +1,8 @@
 /* 賽博纏論 Backtest Dashboard */
 'use strict';
 
-const API = 'http://localhost:8010';
+// 前端跟後端是同一個 FastAPI 服務，一律用目前頁面的 origin，本機/雲端部署都適用
+const API = window.location.origin;
 
 // 週期對應每根K棒的小時數（跟後端 backtest_engine.py 的 INTERVAL_HOURS 保持一致）
 const INTERVAL_HOURS = { '15m': 15/60, '30m': 0.5, '1h': 1, '4h': 4, '1d': 24 };

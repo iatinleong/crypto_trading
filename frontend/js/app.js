@@ -1,4 +1,5 @@
-const API = 'http://localhost:8010';
+// 前端跟後端是同一個 FastAPI 服務，一律用目前頁面的 origin，本機/雲端部署都適用
+const API = window.location.origin;
 
 let chart, candleSeries, volumeSeries;
 let ws = null;
@@ -158,8 +159,9 @@ async function loadKlines() {
 function connectWS() {
   if (ws) { ws.onclose = null; ws.close(); }
 
-  // 連本地後端 WS（後端透過 REST poll Binance 再推送）
-  ws = new WebSocket(`ws://localhost:8010/ws/${currentSymbol}/${currentInterval}`);
+  // 連後端 WS（後端透過 REST poll Binance 再推送）；https 頁面要用 wss
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${currentSymbol}/${currentInterval}`);
 
   const dot = document.getElementById('ws-status');
   const countEl = document.getElementById('ws-count');
