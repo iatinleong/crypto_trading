@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -50,6 +51,8 @@ async def strategy_loop():
     每 15 秒對每個已啟動的自動策略重跑一次纏論訊號生成（跟回測同一套 full_analysis），
     若最新訊號的進場點就落在最新一根K棒（代表訊號剛確認），且還沒對這個訊號下過單，
     就用目前市價自動下單（帶入該訊號的 SL/TP），倉位大小依單筆風險 risk_pct 反推。
+    每輪不管有沒有下單都會更新 last_checked_at（心跳）跟 last_analysis（笔/線段/中枢），
+    讓前端可以顯示「上次檢查時間」並把目前結構畫在即時K線圖上。
     """
     while True:
         for key, cfg in list(armed_strategies.items()):
@@ -57,8 +60,13 @@ async def strategy_loop():
             try:
                 klines = await market.get_klines(symbol, interval, limit=500)
                 if len(klines) < 50:
+                    cfg["last_checked_at"] = time.time()
                     continue
                 result = full_analysis(klines, interval=interval, taker_fee=cfg["taker_fee"])
+                cfg["last_checked_at"] = time.time()
+                cfg["last_analysis"] = {
+                    "bis": result["bis"], "duans": result["duans"], "zhongshu": result["zhongshu"],
+                }
                 signals = result["signals"]
                 if not signals:
                     continue
@@ -302,6 +310,8 @@ async def start_strategy(req: StrategyRequest):
         "leverage": req.leverage,
         "taker_fee": req.taker_fee,
         "last_signal_key": None,
+        "last_checked_at": None,
+        "last_analysis": None,
     }
     return {"message": f"已啟動 {key} 自動策略", "armed": list(armed_strategies.keys())}
 
@@ -317,9 +327,22 @@ async def stop_strategy(symbol: str, interval: str):
 async def strategy_status():
     return {
         "armed": [
-            {"key": k, "risk_pct": v["risk_pct"], "leverage": v["leverage"], "last_signal_key": v["last_signal_key"]}
+            {"key": k, "risk_pct": v["risk_pct"], "leverage": v["leverage"],
+             "last_signal_key": v["last_signal_key"], "last_checked_at": v.get("last_checked_at")}
             for k, v in armed_strategies.items()
         ]
+    }
+
+
+@app.get("/api/strategy/analysis")
+async def get_strategy_analysis(symbol: str, interval: str):
+    key = f"{symbol}/{interval}"
+    cfg = armed_strategies.get(key)
+    if not cfg or not cfg.get("last_analysis"):
+        raise HTTPException(status_code=404, detail="策略未啟動或尚未完成第一輪分析")
+    return {
+        "last_checked_at": cfg.get("last_checked_at"),
+        **cfg["last_analysis"],
     }
 
 

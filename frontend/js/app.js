@@ -10,6 +10,7 @@ let currentCandle = null;      // 目前開著的那根 K 棒
 let lastChartUpdate = 0;       // 節流：最多 100ms 更新一次圖表
 let cachedTrades = [];         // 目前幣對的已平倉交易紀錄（overlay 用）
 let cachedOpenPosition = null; // 目前幣對的持倉（overlay 用）
+let cachedLiveAnalysis = null; // 自動策略最近一輪算出的笔/線段/中枢（overlay 用）
 
 // ── Chart ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,17 @@ async function refreshTradeOverlayData() {
   } catch (e) { /* ignore */ }
 }
 
+// 只有目前這個 symbol/interval 有啟動自動策略時，才能拿到它算出來的笔/線段/中枢
+async function refreshLiveAnalysis() {
+  try {
+    const res = await fetch(`${API}/api/strategy/analysis?symbol=${currentSymbol}&interval=${currentInterval}`);
+    cachedLiveAnalysis = res.ok ? await res.json() : null;
+  } catch (e) {
+    cachedLiveAnalysis = null;
+  }
+  drawLiveOverlay();
+}
+
 function drawLiveOverlay() {
   const canvas = document.getElementById('overlay-canvas');
   if (!canvas || !chart) return;
@@ -85,6 +97,35 @@ function drawLiveOverlay() {
 
   const nowTime = currentCandle ? currentCandle.time : Math.floor(Date.now() / 1000);
   const markers = [];
+
+  // ── 自動策略目前看到的結構（中枢矩形 + 笔 + 線段） ──────────────────────
+  if (cachedLiveAnalysis) {
+    for (const zs of cachedLiveAnalysis.zhongshu || []) {
+      const x1 = timeToX(zs.start_time), x2 = timeToX(zs.end_time);
+      const y1 = priceToY(zs.zh), y2 = priceToY(zs.zl);
+      if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+      ctx.fillStyle = 'rgba(240,185,11,0.07)';
+      ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeStyle = 'rgba(240,185,11,0.40)'; ctx.lineWidth = 1;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
+    for (const bi of cachedLiveAnalysis.bis || []) {
+      const x1 = timeToX(bi.start_time), x2 = timeToX(bi.end_time);
+      const y1 = priceToY(bi.start_price), y2 = priceToY(bi.end_price);
+      if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.strokeStyle = bi.direction === 'up' ? 'rgba(38,166,154,0.6)' : 'rgba(239,83,80,0.6)';
+      ctx.lineWidth = 1.5; ctx.setLineDash([]); ctx.stroke();
+    }
+    for (const d of cachedLiveAnalysis.duans || []) {
+      const x1 = timeToX(d.start_time), x2 = timeToX(d.end_time);
+      const y1 = priceToY(d.start_price), y2 = priceToY(d.end_price);
+      if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.strokeStyle = d.direction === 'up' ? 'rgba(240,185,11,0.85)' : 'rgba(138,43,226,0.85)';
+      ctx.lineWidth = 3.5; ctx.stroke();
+    }
+  }
 
   function drawSlTpLine(x1, x2, sl, tp) {
     if (x1 == null || x2 == null) return;
@@ -375,13 +416,13 @@ async function resetAccount() {
 document.getElementById('symbol-select').addEventListener('change', e => {
   currentSymbol = e.target.value;
   loadKlines(); connectWS(); refreshTicker(); refreshPositions(); refreshOrders(); refreshStrategyStatus();
-  refreshTradeOverlayData();
+  refreshTradeOverlayData(); refreshLiveAnalysis();
 });
 
 document.getElementById('interval-select').addEventListener('change', e => {
   currentInterval = e.target.value;
   loadKlines(); connectWS(); refreshStrategyStatus();
-  refreshTradeOverlayData();
+  refreshTradeOverlayData(); refreshLiveAnalysis();
 });
 
 document.getElementById('order-type').addEventListener('change', e => {
@@ -432,7 +473,12 @@ async function refreshStrategyStatus() {
     if (mine) {
       btn.textContent = '■ 停止自動策略';
       btn.className = 'submit-btn short';
-      statusEl.textContent = `${key} 運行中 · 風險${(mine.risk_pct*100).toFixed(1)}% · ${mine.leverage}x` +
+      let heartbeat = '尚未檢查過';
+      if (mine.last_checked_at) {
+        const secsAgo = Math.max(0, Math.floor(Date.now() / 1000 - mine.last_checked_at));
+        heartbeat = secsAgo <= 45 ? `上次檢查 ${secsAgo}秒前 🟢` : `上次檢查 ${secsAgo}秒前 ⚠️可能已停止`;
+      }
+      statusEl.textContent = `${key} 運行中 · 風險${(mine.risk_pct*100).toFixed(1)}% · ${mine.leverage}x · ${heartbeat}` +
         (mine.last_signal_key ? ` · 上次訊號 ${mine.last_signal_key}` : '');
     } else {
       btn.textContent = '▶ 啟動自動策略';
@@ -469,6 +515,7 @@ setInterval(refreshOrders, 3000);
 setInterval(refreshTicker, 5000);
 setInterval(refreshStrategyStatus, 5000);
 setInterval(refreshTradeOverlayData, 5000);
+setInterval(refreshLiveAnalysis, 5000);
 
 // ── 啟動 ───────────────────────────────────────────────────────────────────
 
@@ -481,3 +528,4 @@ refreshPositions();
 refreshOrders();
 refreshStrategyStatus();
 refreshTradeOverlayData();
+refreshLiveAnalysis();
