@@ -108,7 +108,7 @@ async def strategy_loop():
                 engine.place_order(
                     symbol=symbol, side=latest["side"], order_type="MARKET",
                     quantity=qty, leverage=cfg["leverage"], current_price=current_price,
-                    sl=latest["sl"], tp=latest["tp"],
+                    sl=latest["sl"], tp=latest["tp"], source=f"AUTO:{latest['type']}",
                 )
                 save_state(engine.to_dict())
                 print(f"[strategy] {key} 自動下單 {latest['type']} {latest['side']} qty={qty:.6f} @ {current_price}")
@@ -252,6 +252,12 @@ async def get_orders(symbol: str = "BTCUSDT"):
 @app.get("/api/trades")
 async def get_trades(symbol: str = "BTCUSDT", limit: int = 100):
     return engine.get_trade_history(symbol, limit)
+
+
+@app.get("/api/entries")
+async def get_entries(symbol: str = "BTCUSDT", limit: int = 100):
+    """開倉/加倉紀錄，標明來源（MANUAL 或 AUTO:B1/S1/B2/S2/B3/S3），方便追溯持倉是誰下的。"""
+    return engine.get_entry_log(symbol, limit)
 
 
 @app.post("/api/order")

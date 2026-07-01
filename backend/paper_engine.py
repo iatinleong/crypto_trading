@@ -19,6 +19,7 @@ class PaperEngine:
                 "last_funding_bucket", int(time.time()) // FUNDING_INTERVAL_SEC
             )
             self.trade_history: list = state.get("trade_history", [])
+            self.entry_log: list = state.get("entry_log", [])
         else:
             self.balance = INITIAL_BALANCE
             self.positions = {}
@@ -27,6 +28,7 @@ class PaperEngine:
             self.total_fees = 0.0
             self.last_funding_bucket = int(time.time()) // FUNDING_INTERVAL_SEC
             self.trade_history = []
+            self.entry_log = []
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +39,7 @@ class PaperEngine:
             "total_fees": self.total_fees,
             "last_funding_bucket": self.last_funding_bucket,
             "trade_history": self.trade_history,
+            "entry_log": self.entry_log,
         }
 
     def _next_id(self) -> int:
@@ -55,6 +58,7 @@ class PaperEngine:
         current_price: float | None = None,
         sl: float | None = None,
         tp: float | None = None,
+        source: str = "MANUAL",
     ) -> dict:
         order = {
             "orderId": self._next_id(),
@@ -68,11 +72,12 @@ class PaperEngine:
             "leverage": leverage,
             "sl": sl,
             "tp": tp,
+            "source": source,
         }
         if order_type == "MARKET":
             if current_price is None:
                 raise ValueError("No current price available for market order")
-            self._fill(symbol, side, quantity, current_price, leverage, TAKER_FEE, sl, tp)
+            self._fill(symbol, side, quantity, current_price, leverage, TAKER_FEE, sl, tp, source=source)
             order["status"] = "FILLED"
             order["avgPrice"] = str(current_price)
         else:
@@ -99,7 +104,7 @@ class PaperEngine:
             if triggered:
                 try:
                     self._fill(symbol, o["side"], float(o["origQty"]), limit, o.get("leverage", 10),
-                               MAKER_FEE, o.get("sl"), o.get("tp"))
+                               MAKER_FEE, o.get("sl"), o.get("tp"), source=o.get("source", "MANUAL"))
                     o["status"] = "FILLED"
                     o["avgPrice"] = str(limit)
                 except Exception as e:
@@ -111,9 +116,16 @@ class PaperEngine:
         self.orders = remaining
         return filled
 
+    def _log_entry(self, symbol: str, side: str, qty: float, price: float, leverage: int,
+                    sl: float | None, tp: float | None, source: str, now: int) -> None:
+        self.entry_log.append({
+            "symbol": symbol, "side": side, "qty": qty, "price": price,
+            "leverage": leverage, "sl": sl, "tp": tp, "source": source, "time": now,
+        })
+
     def _fill(self, symbol: str, side: str, qty: float, price: float, leverage: int,
               fee_rate: float = TAKER_FEE, sl: float | None = None, tp: float | None = None,
-              reason: str = "MANUAL"):
+              reason: str = "MANUAL", source: str = "MANUAL"):
         fee = qty * price * fee_rate
         delta = qty if side == "BUY" else -qty
         pos = self.positions.get(symbol)
@@ -127,6 +139,7 @@ class PaperEngine:
             self.total_fees += fee
             self.positions[symbol] = {"amt": delta, "avg_price": price, "margin": margin,
                                        "leverage": leverage, "sl": sl, "tp": tp, "entry_time": now}
+            self._log_entry(symbol, side, qty, price, leverage, sl, tp, source, now)
             return
 
         cur = pos["amt"]
@@ -147,6 +160,7 @@ class PaperEngine:
                 "tp": tp if tp is not None else pos.get("tp"),
                 "entry_time": pos.get("entry_time", now),
             }
+            self._log_entry(symbol, side, qty, price, leverage, sl, tp, source, now)
         else:
             # 減倉 / 平倉 / 反向
             close_qty = min(qty, abs(cur))
@@ -179,6 +193,7 @@ class PaperEngine:
                 self.balance -= new_margin
                 self.positions[symbol] = {"amt": new_amt, "avg_price": price, "margin": new_margin,
                                            "leverage": leverage, "sl": sl, "tp": tp, "entry_time": now}
+                self._log_entry(symbol, side, extra, price, leverage, sl, tp, source, now)
             else:
                 self.positions[symbol] = {
                     "amt": new_amt, "avg_price": pos["avg_price"], "margin": pos["margin"] * (1 - ratio),
@@ -277,6 +292,10 @@ class PaperEngine:
     def get_trade_history(self, symbol: str | None = None, limit: int = 100) -> list:
         hist = self.trade_history if symbol is None else [t for t in self.trade_history if t["symbol"] == symbol]
         return hist[-limit:]
+
+    def get_entry_log(self, symbol: str | None = None, limit: int = 100) -> list:
+        log = self.entry_log if symbol is None else [e for e in self.entry_log if e["symbol"] == symbol]
+        return log[-limit:]
 
     def get_open_orders(self, symbol: str | None = None) -> list:
         return [o for o in self.orders if o["status"] == "NEW" and (symbol is None or o["symbol"] == symbol)]
