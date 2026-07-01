@@ -492,7 +492,7 @@ def generate_signals(
 def run_backtest(
     klines:          List[Dict],
     signals:         List[Dict],
-    initial_capital: float = 10_000.0,
+    initial_capital: float = 500.0,
     leverage:        int   = 10,
     risk_pct:        float = 0.01,
     interval:        str   = "1h",
@@ -710,7 +710,7 @@ def run_backtest(
 
 def full_analysis(
     klines:          List[Dict],
-    initial_capital: float = 10_000.0,
+    initial_capital: float = 500.0,
     leverage:        int   = 10,
     risk_pct:        float = 0.01,
     interval:        str   = "1h",

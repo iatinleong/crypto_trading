@@ -140,6 +140,13 @@ select:focus { border-color: var(--blue); }
   height: 100%;
 }
 
+#overlay-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
 /* ── Sidebar ── */
 .sidebar {
   background: var(--bg);

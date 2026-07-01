@@ -1,6 +1,6 @@
 import time
 
-INITIAL_BALANCE = 10_000.0
+INITIAL_BALANCE = 500.0
 TAKER_FEE = 0.0005   # 0.05% — MARKET 單（VIP0）
 MAKER_FEE = 0.0002   # 0.02% — LIMIT 單成交（VIP0）
 FUNDING_INTERVAL_SEC = 8 * 3600
@@ -18,6 +18,7 @@ class PaperEngine:
             self.last_funding_bucket: int = state.get(
                 "last_funding_bucket", int(time.time()) // FUNDING_INTERVAL_SEC
             )
+            self.trade_history: list = state.get("trade_history", [])
         else:
             self.balance = INITIAL_BALANCE
             self.positions = {}
@@ -25,6 +26,7 @@ class PaperEngine:
             self._counter = 1
             self.total_fees = 0.0
             self.last_funding_bucket = int(time.time()) // FUNDING_INTERVAL_SEC
+            self.trade_history = []
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +36,7 @@ class PaperEngine:
             "counter": self._counter,
             "total_fees": self.total_fees,
             "last_funding_bucket": self.last_funding_bucket,
+            "trade_history": self.trade_history,
         }
 
     def _next_id(self) -> int:
@@ -109,10 +112,12 @@ class PaperEngine:
         return filled
 
     def _fill(self, symbol: str, side: str, qty: float, price: float, leverage: int,
-              fee_rate: float = TAKER_FEE, sl: float | None = None, tp: float | None = None):
+              fee_rate: float = TAKER_FEE, sl: float | None = None, tp: float | None = None,
+              reason: str = "MANUAL"):
         fee = qty * price * fee_rate
         delta = qty if side == "BUY" else -qty
         pos = self.positions.get(symbol)
+        now = int(time.time())
 
         if pos is None:
             margin = (qty * price) / leverage
@@ -121,7 +126,7 @@ class PaperEngine:
             self.balance -= (margin + fee)
             self.total_fees += fee
             self.positions[symbol] = {"amt": delta, "avg_price": price, "margin": margin,
-                                       "leverage": leverage, "sl": sl, "tp": tp}
+                                       "leverage": leverage, "sl": sl, "tp": tp, "entry_time": now}
             return
 
         cur = pos["amt"]
@@ -140,6 +145,7 @@ class PaperEngine:
                 "amt": new_amt, "avg_price": new_avg, "margin": pos["margin"] + margin, "leverage": leverage,
                 "sl": sl if sl is not None else pos.get("sl"),
                 "tp": tp if tp is not None else pos.get("tp"),
+                "entry_time": pos.get("entry_time", now),
             }
         else:
             # 減倉 / 平倉 / 反向
@@ -148,6 +154,20 @@ class PaperEngine:
             ratio = close_qty / abs(cur)
             self.balance += pos["margin"] * ratio + pnl - fee
             self.total_fees += fee
+
+            self.trade_history.append({
+                "symbol":      symbol,
+                "side":        "BUY" if cur > 0 else "SELL",
+                "entry_price": pos["avg_price"],
+                "exit_price":  price,
+                "qty":         close_qty,
+                "pnl":         pnl - fee,
+                "entry_time":  pos.get("entry_time", now),
+                "exit_time":   now,
+                "sl":          pos.get("sl"),
+                "tp":          pos.get("tp"),
+                "exit_reason": reason,
+            })
 
             extra = qty - close_qty
             if abs(new_amt) < 1e-9:
@@ -158,13 +178,14 @@ class PaperEngine:
                     raise ValueError(f"餘額不足進行反向開倉")
                 self.balance -= new_margin
                 self.positions[symbol] = {"amt": new_amt, "avg_price": price, "margin": new_margin,
-                                           "leverage": leverage, "sl": sl, "tp": tp}
+                                           "leverage": leverage, "sl": sl, "tp": tp, "entry_time": now}
             else:
                 self.positions[symbol] = {
                     "amt": new_amt, "avg_price": pos["avg_price"], "margin": pos["margin"] * (1 - ratio),
                     "leverage": pos["leverage"],
                     "sl": sl if sl is not None else pos.get("sl"),
                     "tp": tp if tp is not None else pos.get("tp"),
+                    "entry_time": pos.get("entry_time", now),
                 }
 
     def due_funding_buckets(self) -> list[int]:
@@ -208,6 +229,19 @@ class PaperEngine:
         pnl = amt * (price - entry)
         maintenance = notional * MAINTENANCE_MARGIN_RATE
         if margin + pnl <= maintenance:
+            self.trade_history.append({
+                "symbol":      symbol,
+                "side":        "BUY" if amt > 0 else "SELL",
+                "entry_price": entry,
+                "exit_price":  price,
+                "qty":         abs(amt),
+                "pnl":         -margin,   # 保證金全損
+                "entry_time":  pos.get("entry_time", int(time.time())),
+                "exit_time":   int(time.time()),
+                "sl":          pos.get("sl"),
+                "tp":          pos.get("tp"),
+                "exit_reason": "LIQUIDATION",
+            })
             self.positions.pop(symbol, None)
             # 強平後同幣對的掛單一併取消，避免舊掛單之後觸價、
             # 在使用者不知情的情況下用新保證金開出一筆全新倉位
@@ -224,11 +258,12 @@ class PaperEngine:
         if sl is None and tp is None:
             return False
         is_long = pos["amt"] > 0
-        hit = (sl is not None and ((is_long and price <= sl) or (not is_long and price >= sl))) or \
-              (tp is not None and ((is_long and price >= tp) or (not is_long and price <= tp)))
-        if hit:
+        hit_sl = sl is not None and ((is_long and price <= sl) or (not is_long and price >= sl))
+        hit_tp = tp is not None and ((is_long and price >= tp) or (not is_long and price <= tp))
+        if hit_sl or hit_tp:
             close_side = "SELL" if is_long else "BUY"
-            self._fill(symbol, close_side, abs(pos["amt"]), price, pos["leverage"], TAKER_FEE)
+            self._fill(symbol, close_side, abs(pos["amt"]), price, pos["leverage"], TAKER_FEE,
+                       reason="SL" if hit_sl else "TP")
             return True
         return False
 
@@ -238,6 +273,10 @@ class PaperEngine:
             raise ValueError(f"沒有 {symbol} 的持倉")
         pos["sl"], pos["tp"] = sl, tp
         return pos
+
+    def get_trade_history(self, symbol: str | None = None, limit: int = 100) -> list:
+        hist = self.trade_history if symbol is None else [t for t in self.trade_history if t["symbol"] == symbol]
+        return hist[-limit:]
 
     def get_open_orders(self, symbol: str | None = None) -> list:
         return [o for o in self.orders if o["status"] == "NEW" and (symbol is None or o["symbol"] == symbol)]
@@ -260,6 +299,7 @@ class PaperEngine:
                 "margin": margin,
                 "sl": pos.get("sl"),
                 "tp": pos.get("tp"),
+                "entryTime": pos.get("entry_time"),
                 "liqPrice": self._liquidation_price(amt, pos["avg_price"], pos["leverage"]),
             })
         return result

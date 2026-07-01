@@ -239,6 +239,11 @@ async def get_orders(symbol: str = "BTCUSDT"):
     return engine.get_open_orders(symbol)
 
 
+@app.get("/api/trades")
+async def get_trades(symbol: str = "BTCUSDT", limit: int = 100):
+    return engine.get_trade_history(symbol, limit)
+
+
 @app.post("/api/order")
 async def place_order(order: OrderRequest):
     try:
@@ -323,7 +328,7 @@ class BacktestRequest(BaseModel):
     symbol: str = "BTCUSDT"
     interval: str = "1h"
     limit: int = 500
-    initial_capital: float = 10_000.0
+    initial_capital: float = 500.0
     leverage: int = 10
     risk_pct: float = 0.01
     taker_fee: float = 0.0005
@@ -362,7 +367,7 @@ async def reset_account():
     global engine
     engine = PaperEngine()
     save_state(engine.to_dict())
-    return {"message": "帳戶已重置為 $10,000 USDT"}
+    return {"message": "帳戶已重置為 $500 USDT"}
 
 
 # ── WebSocket：後端 poll → 前端推送 ────────────────────────────────────────

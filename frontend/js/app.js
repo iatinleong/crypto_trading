@@ -7,6 +7,8 @@ let currentInterval = '1m';
 let currentSide = 'BUY';
 let currentCandle = null;      // 目前開著的那根 K 棒
 let lastChartUpdate = 0;       // 節流：最多 100ms 更新一次圖表
+let cachedTrades = [];         // 目前幣對的已平倉交易紀錄（overlay 用）
+let cachedOpenPosition = null; // 目前幣對的持倉（overlay 用）
 
 // ── Chart ──────────────────────────────────────────────────────────────────
 
@@ -37,7 +39,100 @@ function initChart() {
 
   window.addEventListener('resize', () => {
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+    syncOverlayCanvas();
+    drawLiveOverlay();
   });
+
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawLiveOverlay());
+  chart.priceScale('right').subscribeVisiblePriceRangeChange(() => drawLiveOverlay());
+  syncOverlayCanvas();
+}
+
+// ── Overlay：進場點 / 出場點 / SL / TP ──────────────────────────────────────
+
+function syncOverlayCanvas() {
+  const panel = document.querySelector('.chart-panel');
+  const canvas = document.getElementById('overlay-canvas');
+  canvas.width  = panel.clientWidth;
+  canvas.height = panel.clientHeight;
+}
+
+function timeToX(t) {
+  return chart.timeScale().timeToCoordinate(t);
+}
+function priceToY(p) {
+  return candleSeries.priceToCoordinate(p);
+}
+
+async function refreshTradeOverlayData() {
+  try {
+    const [tradesRes, posRes] = await Promise.all([
+      fetch(`${API}/api/trades?symbol=${currentSymbol}&limit=50`),
+      fetch(`${API}/api/positions`),
+    ]);
+    cachedTrades = await tradesRes.json();
+    const positions = await posRes.json();
+    cachedOpenPosition = positions.find(p => p.symbol === currentSymbol) || null;
+    drawLiveOverlay();
+  } catch (e) { /* ignore */ }
+}
+
+function drawLiveOverlay() {
+  const canvas = document.getElementById('overlay-canvas');
+  if (!canvas || !chart) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const nowTime = currentCandle ? currentCandle.time : Math.floor(Date.now() / 1000);
+  const markers = [];
+
+  function drawSlTpLine(x1, x2, sl, tp) {
+    if (x1 == null || x2 == null) return;
+    if (sl != null) {
+      const y = priceToY(sl);
+      if (y != null) {
+        ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y);
+        ctx.strokeStyle = 'rgba(239,83,80,0.6)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke();
+      }
+    }
+    if (tp != null) {
+      const y = priceToY(tp);
+      if (y != null) {
+        ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y);
+        ctx.strokeStyle = 'rgba(38,166,154,0.6)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+  }
+
+  // 已平倉交易：進場→出場的 SL/TP 線段 + 進出場箭頭
+  for (const t of cachedTrades) {
+    drawSlTpLine(timeToX(t.entry_time), timeToX(t.exit_time), t.sl, t.tp);
+    const isBuy = t.side === 'BUY';
+    markers.push({
+      time: t.entry_time, position: isBuy ? 'belowBar' : 'aboveBar',
+      color: isBuy ? '#4caf50' : '#f44336', shape: isBuy ? 'arrowUp' : 'arrowDown', text: '進場', size: 1,
+    });
+    const isWin = t.pnl > 0;
+    markers.push({
+      time: t.exit_time, position: isBuy ? 'aboveBar' : 'belowBar',
+      color: isWin ? '#26a69a' : '#ef5350', shape: isBuy ? 'arrowDown' : 'arrowUp',
+      text: t.exit_reason + (isWin ? ' +' : ' -'), size: 0.9,
+    });
+  }
+
+  // 目前持倉：進場→現在的 SL/TP 線段（還沒平倉，右端延伸到最新一根K棒）
+  if (cachedOpenPosition && cachedOpenPosition.entryTime) {
+    drawSlTpLine(timeToX(cachedOpenPosition.entryTime), timeToX(nowTime), cachedOpenPosition.sl, cachedOpenPosition.tp);
+    const isBuy = cachedOpenPosition.positionAmt > 0;
+    markers.push({
+      time: cachedOpenPosition.entryTime, position: isBuy ? 'belowBar' : 'aboveBar',
+      color: isBuy ? '#4caf50' : '#f44336', shape: isBuy ? 'arrowUp' : 'arrowDown', text: '進場中', size: 1,
+    });
+  }
+
+  markers.sort((a, b) => a.time - b.time);
+  try { candleSeries.setMarkers(markers); } catch (_) {}
 }
 
 // ── K 線 ───────────────────────────────────────────────────────────────────
@@ -101,6 +196,7 @@ function connectWS() {
     // 更新帳戶 / 持倉（每次 tick 都更新，約 500ms 一次）
     refreshAccount();
     refreshPositions();
+    drawLiveOverlay();   // 持倉線段的右端要跟著最新K棒延伸，用快取資料重繪即可（不用重新打API）
   };
 }
 
@@ -263,7 +359,7 @@ async function cancelOrder(orderId) {
 }
 
 async function resetAccount() {
-  if (!confirm('確定重置帳戶？所有持倉和委託單將清除，餘額重設為 $10,000。')) return;
+  if (!confirm('確定重置帳戶？所有持倉和委託單將清除，餘額重設為 $500。')) return;
   try {
     await fetch(`${API}/api/reset`, { method: 'POST' });
     refreshAccount();
@@ -278,11 +374,13 @@ async function resetAccount() {
 document.getElementById('symbol-select').addEventListener('change', e => {
   currentSymbol = e.target.value;
   loadKlines(); connectWS(); refreshTicker(); refreshPositions(); refreshOrders(); refreshStrategyStatus();
+  refreshTradeOverlayData();
 });
 
 document.getElementById('interval-select').addEventListener('change', e => {
   currentInterval = e.target.value;
   loadKlines(); connectWS(); refreshStrategyStatus();
+  refreshTradeOverlayData();
 });
 
 document.getElementById('order-type').addEventListener('change', e => {
@@ -369,6 +467,7 @@ async function toggleStrategy() {
 setInterval(refreshOrders, 3000);
 setInterval(refreshTicker, 5000);
 setInterval(refreshStrategyStatus, 5000);
+setInterval(refreshTradeOverlayData, 5000);
 
 // ── 啟動 ───────────────────────────────────────────────────────────────────
 
@@ -380,3 +479,4 @@ refreshAccount();
 refreshPositions();
 refreshOrders();
 refreshStrategyStatus();
+refreshTradeOverlayData();
