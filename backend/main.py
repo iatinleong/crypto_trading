@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -387,4 +388,5 @@ async def ws_endpoint(websocket: WebSocket, symbol: str, interval: str):
 
 
 # ── 靜態前端 ───────────────────────────────────────────────────────────────
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+_frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
