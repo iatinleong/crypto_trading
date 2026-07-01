@@ -335,11 +335,12 @@ def _prev_same_dir(bis: List[Dict], idx: int) -> Optional[Dict]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def generate_signals(
-    raw_klines:    List[Dict],
-    merged_klines: List[Dict],
-    bis:           List[Dict],
-    zhongshu_list: List[Dict],
-    hist:          List[Optional[float]],
+    raw_klines:           List[Dict],
+    merged_klines:        List[Dict],
+    bis:                  List[Dict],
+    zhongshu_list:        List[Dict],
+    hist:                 List[Optional[float]],
+    filter_counter_trend: bool = False,
 ) -> List[Dict]:
     """
     hist 是在 merged_klines 上算的 MACD 柱狀圖（跟 bis/zhongshu_list 同屬「合併後」
@@ -362,8 +363,8 @@ def generate_signals(
     first_point_bi: Dict[int, str] = {}   # bi index -> "B1"/"S1"，供下面 B2/S2 使用
     for i, bi in enumerate(bis):
         end_idx = bi["end"]["index"]        # 合併後 index（給中枢比較用）
-        raw_end_idx = to_raw(end_idx)        # 原始 index（給進場/邊界判斷用）
-        if raw_end_idx >= n - 2:
+        raw_end_idx = to_raw(end_idx)        # 原始 index：分型中心那根K棒（還沒確認）
+        if raw_end_idx >= n - 3:
             continue
         prev = _prev_same_dir(bis, i)
         if prev is None:
@@ -376,7 +377,9 @@ def generate_signals(
 
         divergence = curr_area < prev_area * 0.85  # 至少弱 15%
 
-        entry, ei, et = entry_at(raw_end_idx)
+        # 分型要等右邊確認燭（raw_end_idx+1）收盤才算成立，這根確認燭的開盤價
+        # 早就過去了、無法進場；真正能下單的是確認燭之後那一根的開盤
+        entry, ei, et = entry_at(raw_end_idx + 1)
 
         if bi["direction"] == "down" and bi["end"]["type"] == "bottom" and divergence:
             # 底背驰 → 第一类买点
@@ -426,10 +429,11 @@ def generate_signals(
         if i + 2 >= len(bis):
             continue
         b0, b2_bi = bis[i], bis[i + 2]
-        raw_end_idx = to_raw(b2_bi["end"]["index"])
-        if raw_end_idx >= n - 2:
+        raw_end_idx = to_raw(b2_bi["end"]["index"])   # 分型中心那根K棒（還沒確認）
+        if raw_end_idx >= n - 3:
             continue
-        entry, ei, et = entry_at(raw_end_idx)
+        # 同 B1/S1：要等確認燭（raw_end_idx+1）收盤才成立，進場在那之後一根
+        entry, ei, et = entry_at(raw_end_idx + 1)
 
         if sig_type == "B1" and b2_bi["end_price"] > b0["end_price"]:
             sl = round(b2_bi["end_price"] * 0.9970, 2)
@@ -522,6 +526,10 @@ def generate_signals(
                 break
 
     signals.sort(key=lambda x: x["index"])
+
+    if filter_counter_trend:
+        signals = _apply_trend_filter(signals)
+
     # 同一 K 棒只保留第一個信號
     seen: set = set()
     unique: List[Dict] = []
@@ -530,6 +538,30 @@ def generate_signals(
             unique.append(s)
             seen.add(s["index"])
     return unique
+
+
+def _apply_trend_filter(signals: List[Dict]) -> List[Dict]:
+    """
+    大級別趨勢過濾（可選）：依時間序走一遍訊號，用最近一次 B3/S3 當作目前
+    中枢級別的趨勢方向，在該方向成立期間過濾掉反向的笔級別訊號
+    （空頭時濾掉 B1/B2，多頭時濾掉 S1/S2）。趨勢直到下一個反向的 B3/S3
+    出現才翻轉——這是簡化版，用「下一次中枢突破訊號」當趨勢失效點，
+    不是逐根K棒去檢查是否收復ZH/跌破ZL，工程上簡單很多但比較粗略。
+    """
+    trend: Optional[str] = None
+    result: List[Dict] = []
+    for s in signals:
+        t = s["type"]
+        if t == "B3":
+            trend = "BULL"
+        elif t == "S3":
+            trend = "BEAR"
+        if trend == "BEAR" and t in ("B1", "B2"):
+            continue
+        if trend == "BULL" and t in ("S1", "S2"):
+            continue
+        result.append(s)
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -902,13 +934,14 @@ def run_backtest(
 # ════════════════════════════════════════════════════════════════════════════
 
 def full_analysis(
-    klines:          List[Dict],
-    initial_capital: float = 500.0,
-    leverage:        int   = 10,
-    risk_pct:        float = 0.01,
-    interval:        str   = "1h",
-    taker_fee:       float = TAKER_FEE,
-    funding_map:     Optional[Dict[int, float]] = None,
+    klines:               List[Dict],
+    initial_capital:      float = 500.0,
+    leverage:             int   = 10,
+    risk_pct:             float = 0.01,
+    interval:             str   = "1h",
+    taker_fee:            float = TAKER_FEE,
+    funding_map:          Optional[Dict[int, float]] = None,
+    filter_counter_trend: bool = False,
 ) -> Dict[str, Any]:
     # 前端K棒圖 / MACD副圖一律顯示原始K棒，跟回測執行（進場、SL/TP、資金費）用同一份資料
     closes = [k["close"] for k in klines]
@@ -925,7 +958,7 @@ def full_analysis(
     # 中枢由線段構造（纏論原著定義），不是直接由笔構造；背驰仍在笔級別判斷（B1/S1
     # 是較快、較細的訊號），兩者是纏論裡並存但不同顆粒度的合法訊號類型
     zhongshu_list = detect_zhongshu(duans if len(duans) >= 3 else bis)
-    signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist)
+    signals       = generate_signals(klines, merged_klines, bis, zhongshu_list, merged_hist, filter_counter_trend)
     conditions    = evaluate_conditions(klines, merged_klines, bis, zhongshu_list, merged_hist, signals)
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
