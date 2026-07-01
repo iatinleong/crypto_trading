@@ -73,20 +73,29 @@ def detect_fractals(klines: List[Dict]) -> List[Dict]:
     return result
 
 
-def _merge_fractals(fractals: List[Dict]) -> List[Dict]:
-    """強制交替方向，同方向取極值。"""
+def _merge_fractals(fractals: List[Dict], min_gap: int = 4) -> List[Dict]:
+    """
+    分型合併，確保輸出嚴格交替、相鄰間距 >= min_gap 根K棒：
+    1) 同方向分型視為同一波段的noise，只留最極端的一個。
+    2) 相鄰異方向分型間距不足 min_gap，視為無效分型直接剔除——剔除後，
+       原本被隔開的前後同方向分型會變成相鄰，下一輪迴圈會自動比較取極值，
+       等同於反覆合併到序列穩定（單一線性掃描即可完成，不需多次遍歷）。
+    這樣才能保證後面用「相鄰分型逐對相接」建笔時，方向必定交替、首尾相接。
+    """
     if not fractals:
         return []
-    merged = [fractals[0]]
+    result = [fractals[0]]
     for f in fractals[1:]:
-        last = merged[-1]
+        last = result[-1]
         if f["type"] == last["type"]:
             if (f["type"] == "top"    and f["price"] > last["price"]) or \
                (f["type"] == "bottom" and f["price"] < last["price"]):
-                merged[-1] = f
+                result[-1] = f
+        elif f["index"] - last["index"] < min_gap:
+            continue   # 間距不足，剔除；下一個分型會跟 last 比較（可能觸發極值合併）
         else:
-            merged.append(f)
-    return merged
+            result.append(f)
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -95,14 +104,13 @@ def _merge_fractals(fractals: List[Dict]) -> List[Dict]:
 
 def detect_bi(klines: List[Dict], fractals: List[Dict]) -> List[Dict]:
     """
-    有效笔：相鄰頂底分型之間至少相距 4 根 K 棒（含頭尾共 5 根以上）。
+    有效笔：由 _merge_fractals 處理後嚴格交替、間距足夠的分型序列，
+    逐對相鄰分型首尾相接構成（保證方向交替、無重疊）。
     """
     merged = _merge_fractals(fractals)
     bis = []
     for i in range(len(merged) - 1):
         f1, f2 = merged[i], merged[i+1]
-        if f2["index"] - f1["index"] < 4:
-            continue
         direction = "up" if f2["type"] == "top" else "down"
         bis.append({
             "start": f1, "end": f2,
@@ -119,23 +127,30 @@ def detect_bi(klines: List[Dict], fractals: List[Dict]) -> List[Dict]:
 
 def detect_zhongshu(bis: List[Dict]) -> List[Dict]:
     """
-    三筆重疊形成中枢：ZL = max(各笔低點), ZH = min(各笔高點), 且 ZH > ZL。
-    中枢可被後續重疊的笔延伸。
+    三筆重疊形成中枢核心：ZL = max(各笔低點), ZH = min(各笔高點), 且 ZH > ZL。
+    核心一旦形成即固定不變，後續笔只要仍與這個固定核心重疊就算延伸；
+    一旦某笔完全不重疊（突破），該中枢結束，下一個中枢從突破笔開始重新尋找核心。
+
+    採「往前走、互不重疊」而非「全域滑動視窗＋事後聯集合併」，
+    避免中枢區間隨延伸不斷取 min/max 聯集而被無限拉寬。
     """
     def bi_range(b: Dict) -> Tuple[float, float]:
         lo = min(b["start_price"], b["end_price"])
         hi = max(b["start_price"], b["end_price"])
         return lo, hi
 
-    raw: List[Dict] = []
+    result: List[Dict] = []
     n = len(bis)
-    for i in range(n - 2):
+    i = 0
+    while i <= n - 3:
         b1, b2, b3 = bis[i], bis[i+1], bis[i+2]
         r1, r2, r3 = bi_range(b1), bi_range(b2), bi_range(b3)
         zl = max(r1[0], r2[0], r3[0])
         zh = min(r1[1], r2[1], r3[1])
         if zh <= zl:
+            i += 1   # 三笔不重疊，往前移一笔重新嘗試核心
             continue
+
         zs: Dict[str, Any] = {
             "zl": zl, "zh": zh,
             "start_time":  b1["start"]["time"],
@@ -144,7 +159,8 @@ def detect_zhongshu(bis: List[Dict]) -> List[Dict]:
             "end_index":   b3["end"]["index"],
             "entry_dir":   b1["direction"],
         }
-        # 延伸中枢：後續筆仍與核心重疊則併入
+
+        # 延伸中枢：後續笔仍與固定核心 [zl, zh] 重疊則併入（核心本身不變）
         j = i + 3
         while j < n:
             lo_j, hi_j = bi_range(bis[j])
@@ -154,21 +170,11 @@ def detect_zhongshu(bis: List[Dict]) -> List[Dict]:
                 j += 1
             else:
                 break
-        raw.append(zs)
 
-    # 去重：後中枢 start 在前中枢結束之前則合併
-    deduped: List[Dict] = []
-    for zs in raw:
-        if deduped and zs["start_index"] <= deduped[-1]["end_index"]:
-            prev = deduped[-1]
-            if zs["end_index"] > prev["end_index"]:
-                prev["end_time"]  = zs["end_time"]
-                prev["end_index"] = zs["end_index"]
-            prev["zl"] = min(prev["zl"], zs["zl"])
-            prev["zh"] = max(prev["zh"], zs["zh"])
-        else:
-            deduped.append(zs)
-    return deduped
+        result.append(zs)
+        i = j   # 從突破的那笔開始找下一個中枢，確保中枢之間不重疊、不聯集
+
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════

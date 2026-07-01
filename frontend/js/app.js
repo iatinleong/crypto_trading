@@ -142,7 +142,7 @@ async function refreshPositions() {
     const positions = await res.json();
     const tbody = document.getElementById('positions-body');
     if (!positions.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">無持倉</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty">無持倉</td></tr>';
       return;
     }
     tbody.innerHTML = positions.map(p => {
@@ -156,9 +156,31 @@ async function refreshPositions() {
         <td>${fmt(p.markPrice)}</td>
         <td>${Math.abs(p.positionAmt)}</td>
         <td class="${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${fmt(pnl)} (${p.percentage.toFixed(2)}%)</td>
+        <td>${p.sl != null ? fmt(p.sl) : '—'}</td>
+        <td>${p.tp != null ? fmt(p.tp) : '—'}</td>
+        <td class="neg">${fmt(p.liqPrice)}</td>
+        <td><button class="icon-btn" onclick="editSlTp('${p.symbol}', ${p.sl ?? 'null'}, ${p.tp ?? 'null'})">設定</button></td>
       </tr>`;
     }).join('');
   } catch (e) { /* ignore */ }
+}
+
+async function editSlTp(symbol, currentSl, currentTp) {
+  const slInput = prompt(`設定 ${symbol} 止損（留空＝不設）`, currentSl ?? '');
+  if (slInput === null) return;
+  const tpInput = prompt(`設定 ${symbol} 止盈（留空＝不設）`, currentTp ?? '');
+  if (tpInput === null) return;
+  const sl = slInput.trim() === '' ? null : parseFloat(slInput);
+  const tp = tpInput.trim() === '' ? null : parseFloat(tpInput);
+  try {
+    const res = await fetch(`${API}/api/position/${symbol}/sltp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sl, tp }),
+    });
+    if (res.ok) refreshPositions();
+    else { const err = await res.json(); alert(err.detail || '更新失敗'); }
+  } catch (e) { alert('連線失敗'); }
 }
 
 // ── 委託單 ─────────────────────────────────────────────────────────────────
@@ -191,6 +213,8 @@ async function placeOrder() {
   const type     = document.getElementById('order-type').value;
   const price    = parseFloat(document.getElementById('order-price').value);
   const leverage = parseInt(document.getElementById('order-leverage').value);
+  const slVal    = parseFloat(document.getElementById('order-sl').value);
+  const tpVal    = parseFloat(document.getElementById('order-tp').value);
 
   if (!qty || qty <= 0)              { showMsg('請輸入數量', 'err'); return; }
   if (type === 'LIMIT' && (!price || price <= 0)) { showMsg('請輸入限價', 'err'); return; }
@@ -202,6 +226,8 @@ async function placeOrder() {
     quantity: qty,
     leverage,
     ...(type === 'LIMIT' ? { price } : {}),
+    ...(slVal > 0 ? { sl: slVal } : {}),
+    ...(tpVal > 0 ? { tp: tpVal } : {}),
   };
 
   try {
@@ -215,6 +241,8 @@ async function placeOrder() {
       showMsg(`✓ 訂單 #${result.orderId} 已送出`, 'ok');
       document.getElementById('order-qty').value = '';
       document.getElementById('order-price').value = '';
+      document.getElementById('order-sl').value = '';
+      document.getElementById('order-tp').value = '';
       refreshOrders();
       refreshAccount();
       refreshPositions();

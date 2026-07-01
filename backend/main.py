@@ -41,12 +41,15 @@ async def funding_loop():
 
 
 async def poll_loop():
-    """每 500ms 輪詢 Binance REST → 推送給前端（繞過 WS 封鎖）"""
+    """每 500ms 輪詢 Binance REST → 推送給前端；同時檢查持倉的強平/止盈止損（繞過 WS 封鎖）"""
     while True:
+        watched_symbols: set[str] = set()
+
         for key, clients in list(ws_clients.items()):
             if not clients:
                 continue
             symbol, interval = key.split("/", 1)
+            watched_symbols.add(symbol)
             try:
                 klines = await market.get_klines(symbol, interval, limit=1)
                 if not klines:
@@ -55,8 +58,10 @@ async def poll_loop():
                 price = k["close"]
                 price_cache[symbol] = price
 
+                liquidated = engine.check_liquidation(symbol, price)
                 filled = engine.check_limit_orders(symbol, price)
-                if filled:
+                closed = False if liquidated else engine.check_sl_tp(symbol, price)
+                if filled or closed or liquidated:
                     save_state(engine.to_dict())
 
                 msg = json.dumps({"type": "tick", "price": price, "kline": k})
@@ -69,6 +74,22 @@ async def poll_loop():
                 clients -= dead
             except Exception as e:
                 print(f"[poll] {key}: {e}")
+
+        # 有持倉但沒有開圖表監看的幣對，仍要輪詢價格以檢查強平/止盈止損
+        for symbol in list(engine.positions.keys()):
+            if symbol in watched_symbols:
+                continue
+            try:
+                price = await market.get_price(symbol)
+                price_cache[symbol] = price
+                liquidated = engine.check_liquidation(symbol, price)
+                filled = engine.check_limit_orders(symbol, price)
+                closed = False if liquidated else engine.check_sl_tp(symbol, price)
+                if filled or closed or liquidated:
+                    save_state(engine.to_dict())
+            except Exception as e:
+                print(f"[poll-bg] {symbol}: {e}")
+
         await asyncio.sleep(0.5)
 
 
@@ -97,6 +118,13 @@ class OrderRequest(BaseModel):
     quantity: float
     price: Optional[float] = None
     leverage: int = 10
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+
+
+class SlTpRequest(BaseModel):
+    sl: Optional[float] = None
+    tp: Optional[float] = None
 
 
 # ── 行情 ───────────────────────────────────────────────────────────────────
@@ -150,6 +178,8 @@ async def place_order(order: OrderRequest):
             price=order.price,
             leverage=order.leverage,
             current_price=current_price,
+            sl=order.sl,
+            tp=order.tp,
         )
         save_state(engine.to_dict())
         return result
@@ -165,6 +195,16 @@ async def cancel_order(order_id: int):
         result = engine.cancel_order(order_id)
         save_state(engine.to_dict())
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/position/{symbol}/sltp")
+async def set_position_sl_tp(symbol: str, req: SlTpRequest):
+    try:
+        engine.set_sl_tp(symbol, req.sl, req.tp)
+        save_state(engine.to_dict())
+        return {"message": "已更新止盈止損"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
