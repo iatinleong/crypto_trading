@@ -99,10 +99,11 @@ function renderConditions(conditions) {
   }
   const labels = {
     B1: '第一類買點 B1（底背馳）', S1: '第一類賣點 S1（頂背馳）',
+    B2: '第二類買點 B2（反彈不創新低）', S2: '第二類賣點 S2（回調不創新高）',
     B3: '第三類買點 B3（突破回踩）', S3: '第三類賣點 S3（跌破反抽）',
   };
   let html = '';
-  for (const type of ['B1', 'S1', 'B3', 'S3']) {
+  for (const type of ['B1', 'S1', 'B2', 'S2', 'B3', 'S3']) {
     const c = conditions[type];
     if (!c) continue;
     // actionable 直接對照真正的 signals 列表（跟 strategy_loop 下單判斷同一個依據）；

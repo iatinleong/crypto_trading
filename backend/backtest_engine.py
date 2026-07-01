@@ -562,7 +562,7 @@ def evaluate_conditions(
     實際下單用的是同一個判斷依據，checklist 顯示的「可進場」才不會跟真實下
     單行為互相矛盾。
     """
-    result: Dict[str, Any] = {"B1": None, "S1": None, "B3": None, "S3": None}
+    result: Dict[str, Any] = {"B1": None, "S1": None, "B2": None, "S2": None, "B3": None, "S3": None}
     n = len(raw_klines)
     fresh_cutoff = n - 2   # 跟 strategy_loop 的 `latest["index"] < len(klines)-2` 同一個門檻
 
@@ -573,39 +573,63 @@ def evaluate_conditions(
         matches = [s for s in signals if s["type"] == sig_type]
         return bool(matches) and matches[-1]["index"] >= fresh_cutoff
 
-    # ── B1 / S1：看最後一笔 ──────────────────────────────────────────────
-    if bis:
-        last_bi = bis[-1]
-        prev = _prev_same_dir(bis, len(bis) - 1)
-        is_b1 = last_bi["direction"] == "down"
-        sig_type = "B1" if is_b1 else "S1"
+    def first_point_conditions(idx: int) -> Tuple[List[Dict], bool]:
+        """bis[idx] 作為第一類買賣點的條件清單，回傳 (conditions, is_b1方向)。"""
+        bi = bis[idx]
+        prev = _prev_same_dir(bis, idx)
+        is_b1 = bi["direction"] == "down"
         want_frac = "bottom" if is_b1 else "top"
-
-        conditions = [
+        conds = [
             {"label": f"笔方向{'向下' if is_b1 else '向上'}", "met": True},
-            {"label": f"笔結束於{'底' if is_b1 else '頂'}分型", "met": last_bi["end"]["type"] == want_frac},
+            {"label": f"笔結束於{'底' if is_b1 else '頂'}分型", "met": bi["end"]["type"] == want_frac},
             {"label": "有前一笔可比較背驰", "met": prev is not None},
         ]
         if prev is not None:
-            curr_area = _macd_area(last_bi, hist)
+            curr_area = _macd_area(bi,   hist)
             prev_area = _macd_area(prev, hist)
             if prev_area > 1e-9:
                 weaken_pct = (1 - curr_area / prev_area) * 100
-                conditions.append({
+                conds.append({
                     "label": f"MACD背驰強度 {weaken_pct:.1f}%（需 ≥15%）",
                     "met": weaken_pct >= 15,
                 })
             else:
-                conditions.append({"label": "前一笔MACD面積有效", "met": False})
+                conds.append({"label": "前一笔MACD面積有效", "met": False})
         else:
-            conditions.append({"label": "MACD背驰強度（需 ≥15%）", "met": False})
+            conds.append({"label": "MACD背驰強度（需 ≥15%）", "met": False})
+        return conds, is_b1
 
+    # ── B1 / S1：看最後一笔 ──────────────────────────────────────────────
+    if bis:
+        conditions, is_b1 = first_point_conditions(len(bis) - 1)
+        sig_type = "B1" if is_b1 else "S1"
+        all_met  = all(c["met"] for c in conditions)
+        result[sig_type] = {
+            "all_met":     all_met,
+            "actionable":  is_actionable(sig_type),
+            "conditions":  conditions,
+            "bi_end_time": bis[-1]["end"]["time"],
+        }
+
+    # ── B2 / S2：2笔前是否為第一類買賣點，且目前這笔沒有創新低/新高 ─────────
+    if len(bis) >= 3:
+        b0_idx = len(bis) - 3
+        b0, b2_bi = bis[b0_idx], bis[-1]
+        b0_conditions, b0_is_b1 = first_point_conditions(b0_idx)
+        b0_all_met = all(c["met"] for c in b0_conditions)
+        sig_type = "B2" if b0_is_b1 else "S2"
+        no_new_extreme = (b2_bi["end_price"] > b0["end_price"]) if b0_is_b1 else (b2_bi["end_price"] < b0["end_price"])
+
+        conditions = [
+            {"label": f"前2笔確認為第一類{'买' if b0_is_b1 else '卖'}点（{'B1' if b0_is_b1 else 'S1'}）", "met": b0_all_met},
+            {"label": f"次級别反彈後未創新{'低' if b0_is_b1 else '高'}", "met": no_new_extreme},
+        ]
         all_met = all(c["met"] for c in conditions)
         result[sig_type] = {
             "all_met":     all_met,
             "actionable":  is_actionable(sig_type),
             "conditions":  conditions,
-            "bi_end_time": last_bi["end"]["time"],
+            "bi_end_time": b2_bi["end"]["time"],
         }
 
     # ── B3 / S3：看最後一個中枢，向上/向下突破各自獨立判斷 ────────────────
