@@ -1,0 +1,215 @@
+import asyncio
+import json
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from market import MarketClient
+from paper_engine import PaperEngine
+from state_store import load_state, save_state
+from backtest_engine import full_analysis
+
+market = MarketClient()
+engine = PaperEngine(load_state())
+price_cache: dict[str, float] = {}
+
+# 已連線的前端 WS 客戶端：key = "SYMBOL/interval"
+ws_clients: dict[str, set[WebSocket]] = {}
+
+
+async def poll_loop():
+    """每 500ms 輪詢 Binance REST → 推送給前端（繞過 WS 封鎖）"""
+    while True:
+        for key, clients in list(ws_clients.items()):
+            if not clients:
+                continue
+            symbol, interval = key.split("/", 1)
+            try:
+                klines = await market.get_klines(symbol, interval, limit=1)
+                if not klines:
+                    continue
+                k = klines[0]
+                price = k["close"]
+                price_cache[symbol] = price
+
+                filled = engine.check_limit_orders(symbol, price)
+                if filled:
+                    save_state(engine.to_dict())
+
+                msg = json.dumps({"type": "tick", "price": price, "kline": k})
+                dead: set[WebSocket] = set()
+                for ws in list(clients):
+                    try:
+                        await ws.send_text(msg)
+                    except Exception:
+                        dead.add(ws)
+                clients -= dead
+            except Exception as e:
+                print(f"[poll] {key}: {e}")
+        await asyncio.sleep(0.5)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(poll_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="賽博纏論 Dashboard", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class OrderRequest(BaseModel):
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float
+    price: Optional[float] = None
+    leverage: int = 10
+
+
+# ── 行情 ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/klines")
+async def get_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 200):
+    try:
+        return await market.get_klines(symbol, interval, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ticker")
+async def get_ticker(symbol: str = "BTCUSDT"):
+    try:
+        return await market.get_ticker(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Paper Trading ──────────────────────────────────────────────────────────
+
+@app.get("/api/account")
+async def get_account():
+    return engine.get_account(price_cache)
+
+
+@app.get("/api/positions")
+async def get_positions():
+    return engine.get_positions(price_cache)
+
+
+@app.get("/api/orders")
+async def get_orders(symbol: str = "BTCUSDT"):
+    return engine.get_open_orders(symbol)
+
+
+@app.post("/api/order")
+async def place_order(order: OrderRequest):
+    try:
+        current_price = price_cache.get(order.symbol)
+        if current_price is None and order.order_type == "MARKET":
+            current_price = await market.get_price(order.symbol)
+            price_cache[order.symbol] = current_price
+
+        result = engine.place_order(
+            symbol=order.symbol,
+            side=order.side,
+            order_type=order.order_type,
+            quantity=order.quantity,
+            price=order.price,
+            leverage=order.leverage,
+            current_price=current_price,
+        )
+        save_state(engine.to_dict())
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/order/{order_id}")
+async def cancel_order(order_id: int):
+    try:
+        result = engine.cancel_order(order_id)
+        save_state(engine.to_dict())
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── Backtest ───────────────────────────────────────────────────────────────
+
+class BacktestRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "1h"
+    limit: int = 500
+    initial_capital: float = 10_000.0
+    leverage: int = 10
+    risk_pct: float = 0.01
+    taker_fee: float = 0.0005
+
+
+@app.post("/api/backtest")
+async def run_backtest_api(req: BacktestRequest):
+    try:
+        klines = await market.get_klines(req.symbol, req.interval, min(req.limit, 1500))
+        try:
+            funding_map = await market.get_funding_rates(
+                req.symbol, klines[0]["time"], klines[-1]["time"]
+            )
+        except Exception as e:
+            print(f"[backtest] funding rate fetch failed, fallback to fixed rate: {e}")
+            funding_map = None
+
+        result = full_analysis(
+            klines,
+            initial_capital=req.initial_capital,
+            leverage=req.leverage,
+            risk_pct=req.risk_pct,
+            interval=req.interval,
+            taker_fee=req.taker_fee,
+            funding_map=funding_map,
+        )
+        result["klines"] = klines
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/reset")
+async def reset_account():
+    global engine
+    engine = PaperEngine()
+    save_state(engine.to_dict())
+    return {"message": "帳戶已重置為 $10,000 USDT"}
+
+
+# ── WebSocket：後端 poll → 前端推送 ────────────────────────────────────────
+
+@app.websocket("/ws/{symbol}/{interval}")
+async def ws_endpoint(websocket: WebSocket, symbol: str, interval: str):
+    await websocket.accept()
+    key = f"{symbol}/{interval}"
+    ws_clients.setdefault(key, set()).add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()   # 保持連線（前端不需要送任何訊息）
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_clients.get(key, set()).discard(websocket)
+
+
+# ── 靜態前端 ───────────────────────────────────────────────────────────────
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")

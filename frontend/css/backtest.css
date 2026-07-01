@@ -1,0 +1,374 @@
+/* 賽博纏論 — Backtest Dashboard */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0d1117;
+  --bg2:      #161b22;
+  --bg3:      #21262d;
+  --border:   #30363d;
+  --text:     #c9d1d9;
+  --muted:    #8b949e;
+  --blue:     #58a6ff;
+  --green:    #26a69a;
+  --red:      #ef5350;
+  --gold:     #f0b90b;
+  --purple:   #a371f7;
+  --green-bg: rgba(38,166,154,.12);
+  --red-bg:   rgba(239,83,80,.12);
+  --font:     'SF Mono','Fira Code','Consolas',monospace;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
+.logo {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--blue);
+  white-space: nowrap;
+  margin-right: 6px;
+}
+
+.bt-badge {
+  font-size: 9px;
+  background: rgba(240,185,11,.15);
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  border-radius: 3px;
+  padding: 1px 5px;
+  letter-spacing: 0.5px;
+}
+
+.ctrl-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ctrl-group label {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+select, input[type="number"], input[type="text"] {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 7px;
+  border-radius: 4px;
+  font-family: var(--font);
+  font-size: 11px;
+  outline: none;
+  height: 28px;
+}
+select:focus, input:focus { border-color: var(--blue); }
+
+.sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+
+.btn-start {
+  padding: 0 18px;
+  height: 32px;
+  border-radius: 5px;
+  border: 1px solid var(--gold);
+  background: rgba(240,185,11,.15);
+  color: var(--gold);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter .2s;
+  letter-spacing: 0.5px;
+}
+.btn-start:hover { filter: brightness(1.3); }
+.btn-start:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
+
+.btn-back {
+  padding: 0 12px;
+  height: 28px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+}
+.btn-back:hover { color: var(--text); border-color: var(--text); }
+
+#status-msg {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+#status-msg.running { color: var(--gold); }
+#status-msg.done    { color: var(--green); }
+#status-msg.err     { color: var(--red); }
+
+/* ── Body Layout ── */
+.body-wrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 1px;
+  background: var(--border);
+}
+
+/* ── Left: Charts ── */
+.chart-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  position: relative;
+}
+
+#chart-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#main-chart { width: 100%; height: 100%; }
+
+/* Canvas overlay for bi lines + zhongshu boxes + SL/TP ranges */
+#overlay-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#macd-wrap {
+  height: 130px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+
+#macd-label {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 10px;
+  color: var(--muted);
+  z-index: 5;
+  pointer-events: none;
+}
+
+#macd-chart { width: 100%; height: 100%; }
+
+/* ── Right: Stats + Equity ── */
+.stats-col {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.panel {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.panel-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.stats-grid .lbl { color: var(--muted); font-size: 11px; }
+.stats-grid .val { text-align: right; font-size: 12px; font-weight: 600; }
+.stats-grid .divider {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.val.pos  { color: var(--green); }
+.val.neg  { color: var(--red); }
+.val.gold { color: var(--gold); }
+.val.neutral { color: var(--text); }
+
+/* Signal type counts */
+.sig-counts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.sig-chip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.sig-chip.b1 { color: #4caf50; border-color: #4caf50; background: rgba(76,175,80,.1); }
+.sig-chip.s1 { color: #f44336; border-color: #f44336; background: rgba(244,67,54,.1); }
+.sig-chip.b3 { color: #26a69a; border-color: #26a69a; background: rgba(38,166,154,.1); }
+.sig-chip.s3 { color: #ef5350; border-color: #ef5350; background: rgba(239,83,80,.1); }
+
+/* Equity curve container */
+#equity-chart { width: 100%; height: 140px; }
+
+/* ── Bottom: Trade Log ── */
+.trade-log {
+  height: 185px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+}
+
+.trade-log-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.trade-log-header span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.table-wrap { overflow-y: auto; overflow-x: auto; flex: 1; }
+
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  position: sticky;
+  top: 0;
+  background: var(--bg2);
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+td {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(48,54,61,.6);
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 20px !important;
+  font-style: italic;
+}
+
+/* colors */
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+
+/* type badges */
+.badge {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid;
+  font-weight: 700;
+}
+.badge.B1 { color: #4caf50; border-color: #4caf50; background: rgba(76,175,80,.1); }
+.badge.S1 { color: #f44336; border-color: #f44336; background: rgba(244,67,54,.1); }
+.badge.B3 { color: #26a69a; border-color: #26a69a; background: rgba(38,166,154,.1); }
+.badge.S3 { color: #ef5350; border-color: #ef5350; background: rgba(239,83,80,.1); }
+
+/* TP/SL pills */
+.pill {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.pill.tp { background: rgba(38,166,154,.2); color: var(--green); }
+.pill.sl { background: rgba(239,83,80,.2);  color: var(--red); }
+.pill.cl { background: var(--bg3);           color: var(--muted); }
+
+/* Loading overlay */
+#loading {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(13,17,23,.8);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+}
+#loading.show { display: flex; }
+
+.spinner {
+  width: 36px; height: 36px;
+  border: 3px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#loading-txt { color: var(--gold); font-size: 13px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>賽博纏論 — 回測</title>
+  <script src="js/lightweight-charts.js"></script>
+  <link rel="stylesheet" href="css/backtest.css" />
+</head>
+<body>
+
+<!-- ── Loading Overlay ───────────────────────────────────────────────── -->
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-txt">正在運算缠論結構...</div>
+</div>
+
+<!-- ── Header ───────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">賽博纏論 <span class="bt-badge">BACKTEST</span></div>
+
+  <div class="sep"></div>
+
+  <div class="ctrl-group">
+    <label>幣對</label>
+    <select id="bt-symbol">
+      <option value="BTCUSDT">BTC/USDT</option>
+      <option value="ETHUSDT">ETH/USDT</option>
+      <option value="SOLUSDT">SOL/USDT</option>
+      <option value="BNBUSDT">BNB/USDT</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
+    <label>週期</label>
+    <select id="bt-interval">
+      <option value="15m">15m</option>
+      <option value="30m">30m</option>
+      <option value="1h" selected>1h</option>
+      <option value="4h">4h</option>
+      <option value="1d">1d</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
+    <label>K棒數</label>
+    <select id="bt-limit">
+      <option value="200">200</option>
+      <option value="300">300</option>
+      <option value="500" selected>500</option>
+      <option value="800">800</option>
+      <option value="1000">1000</option>
+      <option value="1500">1500</option>
+    </select>
+  </div>
+
+  <div class="sep"></div>
+
+  <div class="ctrl-group">
+    <label>本金 $</label>
+    <input type="number" id="bt-capital" value="10000" min="100" step="100" style="width:90px" />
+  </div>
+
+  <div class="ctrl-group">
+    <label>槓桿</label>
+    <select id="bt-leverage">
+      <option value="1">1x</option>
+      <option value="3">3x</option>
+      <option value="5">5x</option>
+      <option value="10" selected>10x</option>
+      <option value="20">20x</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
+    <label>單筆風險</label>
+    <select id="bt-risk">
+      <option value="0.005">0.5%</option>
+      <option value="0.01" selected>1%</option>
+      <option value="0.02">2%</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
+    <label>VIP 費率</label>
+    <select id="bt-fee">
+      <option value="0.0005" selected>0 / 0.050%</option>
+      <option value="0.0004">1 / 0.040%</option>
+      <option value="0.00035">2 / 0.035%</option>
+      <option value="0.00032">3 / 0.032%</option>
+      <option value="0.00025">5 / 0.025%</option>
+      <option value="0.00017">9 / 0.017%</option>
+    </select>
+  </div>
+
+  <div class="sep"></div>
+
+  <button class="btn-start" id="btn-start" onclick="startBacktest()">▶ 開始回測</button>
+
+  <div id="status-msg">選好參數後按開始</div>
+
+  <a class="btn-back" href="index.html">← 實盤</a>
+</header>
+
+<!-- ── Body ─────────────────────────────────────────────────────────── -->
+<div class="body-wrap">
+
+  <!-- Left: Charts -->
+  <div class="chart-col">
+    <div id="chart-wrap">
+      <div id="main-chart"></div>
+      <canvas id="overlay-canvas"></canvas>
+    </div>
+    <div id="macd-wrap">
+      <div id="macd-label">MACD (12,26,9)</div>
+      <div id="macd-chart"></div>
+    </div>
+  </div>
+
+  <!-- Right: Stats + Equity -->
+  <div class="stats-col">
+
+    <div class="panel">
+      <div class="panel-title">績效統計</div>
+      <div class="stats-grid" id="stats-grid">
+        <span class="lbl">總收益</span>         <span class="val neutral" id="s-return">—</span>
+        <span class="lbl">淨盈虧</span>          <span class="val neutral" id="s-pnl">—</span>
+        <div class="divider"></div>
+        <span class="lbl">勝率</span>            <span class="val neutral" id="s-winrate">—</span>
+        <span class="lbl">盈虧比</span>          <span class="val neutral" id="s-rr">—</span>
+        <span class="lbl">獲利因子</span>        <span class="val neutral" id="s-pf">—</span>
+        <div class="divider"></div>
+        <span class="lbl">交易次數</span>        <span class="val neutral" id="s-trades">—</span>
+        <span class="lbl">TP / SL</span>         <span class="val neutral" id="s-tpsl">—</span>
+        <span class="lbl">平均盈利</span>        <span class="val neutral" id="s-avgwin">—</span>
+        <span class="lbl">平均虧損</span>        <span class="val neutral" id="s-avgloss">—</span>
+        <div class="divider"></div>
+        <span class="lbl">最大回撤</span>        <span class="val neutral" id="s-dd">—</span>
+        <span class="lbl">累計手續費</span>      <span class="val neutral" id="s-fees">—</span>
+        <div class="divider"></div>
+        <span class="lbl">初始資金</span>        <span class="val neutral" id="s-init">—</span>
+        <span class="lbl">最終資金</span>        <span class="val neutral" id="s-final">—</span>
+      </div>
+      <div class="sig-counts" id="sig-counts"></div>
+    </div>
+
+    <div class="panel" style="padding-bottom:4px">
+      <div class="panel-title">資金曲線</div>
+      <div id="equity-chart"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Trade Log ─────────────────────────────────────────────────────── -->
+<div class="trade-log">
+  <div class="trade-log-header">
+    <span>交易記錄</span>
+    <span id="trade-count" style="color:var(--blue)"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>類型</th>
+          <th>方向</th>
+          <th>入場時間</th>
+          <th>入場價</th>
+          <th>出場價</th>
+          <th>止損</th>
+          <th>止盈</th>
+          <th>數量</th>
+          <th>結果</th>
+          <th>淨盈虧</th>
+          <th>手續費</th>
+          <th>原因</th>
+        </tr>
+      </thead>
+      <tbody id="trade-tbody">
+        <tr><td colspan="13" class="empty">尚未執行回測</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="js/backtest.js?v=1"></script>
+</body>
+</html>

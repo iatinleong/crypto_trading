@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+backend/paper_state.json
+
+# 版權課程教材，不進 repo
+*.pdf
+*.pptx
+
+.claude/settings.local.json
