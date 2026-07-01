@@ -66,20 +66,34 @@ async def strategy_loop():
                 if latest["index"] < len(klines) - 2:
                     continue  # 訊號不是剛發生的，不追歷史訊號
 
+                if symbol in engine.positions:
+                    continue  # 跟回測一致：同一幣對已有持倉時不追加新訊號
+
                 sig_key = f"{latest['time']}_{latest['type']}"
                 if cfg.get("last_signal_key") == sig_key:
                     continue  # 這個訊號已經處理過
                 cfg["last_signal_key"] = sig_key
 
                 sl_dist = abs(latest["entry"] - latest["sl"])
-                if sl_dist <= 0:
-                    continue
+                if sl_dist < latest["entry"] * 0.0001:
+                    continue  # 止損距離太近，視為無效訊號（跟回測門檻一致）
 
                 current_price = await market.get_price(symbol)
                 price_cache[symbol] = current_price
                 account = engine.get_account(price_cache)
                 risk_amount = account["totalWalletBalance"] * cfg["risk_pct"]
                 qty = risk_amount / sl_dist
+
+                # 保證金上限：用 availableBalance（尚未被任何持倉鎖住的自由資金）而非
+                # totalWalletBalance，因為實測允許同時對多個幣對啟動策略，若用總資產當
+                # 基準，各策略會各自以為能用到 20% 總資產，加總起來可能遠超單一回測模型
+                notional = qty * current_price
+                margin   = notional / cfg["leverage"]
+                max_margin = account["availableBalance"] * 0.20
+                if margin > max_margin:
+                    margin   = max_margin
+                    notional = margin * cfg["leverage"]
+                    qty      = notional / current_price
 
                 engine.place_order(
                     symbol=symbol, side=latest["side"], order_type="MARKET",
