@@ -106,12 +106,10 @@ function renderConditions(conditions) {
   for (const type of ['B1', 'S1', 'B2', 'S2', 'B3', 'S3']) {
     const c = conditions[type];
     if (!c) continue;
-    // actionable 直接對照真正的 signals 列表（跟 strategy_loop 下單判斷同一個依據）；
-    // all_met 但不 actionable 代表結構條件曾經成立，但沒有變成一筆「夠新鮮」的真實訊號
-    const stale = c.all_met && !c.actionable;
-    const bg = c.actionable ? 'rgba(38,166,154,.15)' : stale ? 'rgba(240,185,11,.10)' : 'rgba(255,255,255,.03)';
-    const titleColor = c.actionable ? '#26a69a' : stale ? '#f0b90b' : '#c9d1d9';
-    const badge = c.actionable ? ' ✅ 現在可進場' : stale ? ' ⌛ 曾滿足但不是新訊號' : '';
+    // actionable 直接對照真正的 signals 列表（跟 strategy_loop 下單判斷同一個依據）
+    const bg = c.actionable ? 'rgba(38,166,154,.15)' : 'rgba(255,255,255,.03)';
+    const titleColor = c.actionable ? '#26a69a' : '#c9d1d9';
+    const badge = c.actionable ? ' ✅ 現在可進場' : '';
     html += `<div style="margin-bottom:8px;padding:6px 8px;border-radius:4px;background:${bg}">`;
     html += `<div style="font-weight:600;margin-bottom:4px;color:${titleColor}">${labels[type]}${badge}</div>`;
     for (const cond of c.conditions) {
