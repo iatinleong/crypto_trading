@@ -209,6 +209,9 @@ class PaperEngine:
         maintenance = notional * MAINTENANCE_MARGIN_RATE
         if margin + pnl <= maintenance:
             self.positions.pop(symbol, None)
+            # 強平後同幣對的掛單一併取消，避免舊掛單之後觸價、
+            # 在使用者不知情的情況下用新保證金開出一筆全新倉位
+            self.orders = [o for o in self.orders if o["symbol"] != symbol]
             return True
         return False
 
