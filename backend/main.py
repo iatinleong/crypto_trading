@@ -20,6 +20,10 @@ price_cache: dict[str, float] = {}
 # 已連線的前端 WS 客戶端：key = "SYMBOL/interval"
 ws_clients: dict[str, set[WebSocket]] = {}
 
+# 已啟動的自動策略：key = "SYMBOL/interval" -> {risk_pct, leverage, taker_fee, last_signal_key}
+# 純記憶體狀態（不落地持久化），伺服器重啟就需要重新啟動策略
+armed_strategies: dict[str, dict] = {}
+
 
 async def funding_loop():
     """每分鐘檢查一次是否跨過 00:00/08:00/16:00 UTC 結算點，對持倉收付資金費。"""
@@ -38,6 +42,55 @@ async def funding_loop():
         except Exception as e:
             print(f"[funding] {e}")
         await asyncio.sleep(60)
+
+
+async def strategy_loop():
+    """
+    每 15 秒對每個已啟動的自動策略重跑一次纏論訊號生成（跟回測同一套 full_analysis），
+    若最新訊號的進場點就落在最新一根K棒（代表訊號剛確認），且還沒對這個訊號下過單，
+    就用目前市價自動下單（帶入該訊號的 SL/TP），倉位大小依單筆風險 risk_pct 反推。
+    """
+    while True:
+        for key, cfg in list(armed_strategies.items()):
+            symbol, interval = key.split("/", 1)
+            try:
+                klines = await market.get_klines(symbol, interval, limit=500)
+                if len(klines) < 50:
+                    continue
+                result = full_analysis(klines, interval=interval, taker_fee=cfg["taker_fee"])
+                signals = result["signals"]
+                if not signals:
+                    continue
+
+                latest = signals[-1]
+                if latest["index"] < len(klines) - 2:
+                    continue  # 訊號不是剛發生的，不追歷史訊號
+
+                sig_key = f"{latest['time']}_{latest['type']}"
+                if cfg.get("last_signal_key") == sig_key:
+                    continue  # 這個訊號已經處理過
+                cfg["last_signal_key"] = sig_key
+
+                sl_dist = abs(latest["entry"] - latest["sl"])
+                if sl_dist <= 0:
+                    continue
+
+                current_price = await market.get_price(symbol)
+                price_cache[symbol] = current_price
+                account = engine.get_account(price_cache)
+                risk_amount = account["totalWalletBalance"] * cfg["risk_pct"]
+                qty = risk_amount / sl_dist
+
+                engine.place_order(
+                    symbol=symbol, side=latest["side"], order_type="MARKET",
+                    quantity=qty, leverage=cfg["leverage"], current_price=current_price,
+                    sl=latest["sl"], tp=latest["tp"],
+                )
+                save_state(engine.to_dict())
+                print(f"[strategy] {key} 自動下單 {latest['type']} {latest['side']} qty={qty:.6f} @ {current_price}")
+            except Exception as e:
+                print(f"[strategy] {key}: {e}")
+        await asyncio.sleep(15)
 
 
 async def poll_loop():
@@ -97,9 +150,11 @@ async def poll_loop():
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(poll_loop())
     funding_task = asyncio.create_task(funding_loop())
+    strategy_task = asyncio.create_task(strategy_loop())
     yield
     task.cancel()
     funding_task.cancel()
+    strategy_task.cancel()
 
 
 app = FastAPI(title="賽博纏論 Dashboard", lifespan=lifespan)
@@ -125,6 +180,14 @@ class OrderRequest(BaseModel):
 class SlTpRequest(BaseModel):
     sl: Optional[float] = None
     tp: Optional[float] = None
+
+
+class StrategyRequest(BaseModel):
+    symbol: str
+    interval: str = "1h"
+    risk_pct: float = 0.01
+    leverage: int = 10
+    taker_fee: float = 0.0005
 
 
 # ── 行情 ───────────────────────────────────────────────────────────────────
@@ -207,6 +270,37 @@ async def set_position_sl_tp(symbol: str, req: SlTpRequest):
         return {"message": "已更新止盈止損"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── 自動策略（用回測同一套訊號生成，接上即時行情自動下單） ─────────────────
+
+@app.post("/api/strategy/start")
+async def start_strategy(req: StrategyRequest):
+    key = f"{req.symbol}/{req.interval}"
+    armed_strategies[key] = {
+        "risk_pct": req.risk_pct,
+        "leverage": req.leverage,
+        "taker_fee": req.taker_fee,
+        "last_signal_key": None,
+    }
+    return {"message": f"已啟動 {key} 自動策略", "armed": list(armed_strategies.keys())}
+
+
+@app.post("/api/strategy/stop")
+async def stop_strategy(symbol: str, interval: str):
+    key = f"{symbol}/{interval}"
+    armed_strategies.pop(key, None)
+    return {"message": f"已停止 {key} 自動策略", "armed": list(armed_strategies.keys())}
+
+
+@app.get("/api/strategy/status")
+async def strategy_status():
+    return {
+        "armed": [
+            {"key": k, "risk_pct": v["risk_pct"], "leverage": v["leverage"], "last_signal_key": v["last_signal_key"]}
+            for k, v in armed_strategies.items()
+        ]
+    }
 
 
 # ── Backtest ───────────────────────────────────────────────────────────────

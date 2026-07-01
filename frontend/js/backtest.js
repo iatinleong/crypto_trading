@@ -141,7 +141,7 @@ function drawOverlay() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (!cachedResult) return;
-  const { bis, zhongshu, trades, signals } = cachedResult;
+  const { bis, duans, zhongshu, trades, signals } = cachedResult;
 
   // ── 中枢矩形 ───────────────────────────────────────────────────────────
   if (zhongshu) {
@@ -181,6 +181,26 @@ function drawOverlay() {
       ctx.strokeStyle = bi.direction === 'up'
         ? 'rgba(38,166,154,0.6)'
         : 'rgba(239,83,80,0.6)';
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+  }
+
+  // ── 線段 (Duan / Segment) ────────────────────────────────────────────────
+  if (duans) {
+    ctx.lineWidth = 3.5;
+    for (const d of duans) {
+      const x1 = timeToX(d.start_time);
+      const x2 = timeToX(d.end_time);
+      const y1 = priceToY(d.start_price);
+      const y2 = priceToY(d.end_price);
+      if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = d.direction === 'up'
+        ? 'rgba(240, 185, 11, 0.85)'  // 亮黃色
+        : 'rgba(138, 43, 226, 0.85)'; // 紫色
       ctx.setLineDash([]);
       ctx.stroke();
     }

@@ -277,12 +277,12 @@ async function resetAccount() {
 
 document.getElementById('symbol-select').addEventListener('change', e => {
   currentSymbol = e.target.value;
-  loadKlines(); connectWS(); refreshTicker(); refreshPositions(); refreshOrders();
+  loadKlines(); connectWS(); refreshTicker(); refreshPositions(); refreshOrders(); refreshStrategyStatus();
 });
 
 document.getElementById('interval-select').addEventListener('change', e => {
   currentInterval = e.target.value;
-  loadKlines(); connectWS();
+  loadKlines(); connectWS(); refreshStrategyStatus();
 });
 
 document.getElementById('order-type').addEventListener('change', e => {
@@ -320,9 +320,55 @@ function showMsg(msg, type) {
   setTimeout(() => { el.textContent = ''; el.className = 'order-msg'; }, 4000);
 }
 
+// ── 自動策略 ───────────────────────────────────────────────────────────────
+
+async function refreshStrategyStatus() {
+  try {
+    const res = await fetch(`${API}/api/strategy/status`);
+    const data = await res.json();
+    const key = `${currentSymbol}/${currentInterval}`;
+    const mine = data.armed.find(a => a.key === key);
+    const btn = document.getElementById('strategy-toggle-btn');
+    const statusEl = document.getElementById('strategy-status');
+    if (mine) {
+      btn.textContent = '■ 停止自動策略';
+      btn.className = 'submit-btn short';
+      statusEl.textContent = `${key} 運行中 · 風險${(mine.risk_pct*100).toFixed(1)}% · ${mine.leverage}x` +
+        (mine.last_signal_key ? ` · 上次訊號 ${mine.last_signal_key}` : '');
+    } else {
+      btn.textContent = '▶ 啟動自動策略';
+      btn.className = 'submit-btn long';
+      statusEl.textContent = '未啟動';
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function toggleStrategy() {
+  const key = `${currentSymbol}/${currentInterval}`;
+  const btn = document.getElementById('strategy-toggle-btn');
+  const isRunning = btn.textContent.includes('停止');
+  try {
+    if (isRunning) {
+      await fetch(`${API}/api/strategy/stop?symbol=${currentSymbol}&interval=${currentInterval}`, { method: 'POST' });
+    } else {
+      const risk_pct = parseFloat(document.getElementById('strategy-risk').value);
+      const leverage = parseInt(document.getElementById('strategy-leverage').value);
+      await fetch(`${API}/api/strategy/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: currentSymbol, interval: currentInterval, risk_pct, leverage }),
+      });
+    }
+    refreshStrategyStatus();
+  } catch (e) {
+    document.getElementById('strategy-msg').textContent = '連線失敗';
+  }
+}
+
 // ── 定期刷新委託單（不走 tick，因為限價單觸發後需要更新）─────────────────
 setInterval(refreshOrders, 3000);
 setInterval(refreshTicker, 5000);
+setInterval(refreshStrategyStatus, 5000);
 
 // ── 啟動 ───────────────────────────────────────────────────────────────────
 
@@ -333,3 +379,4 @@ refreshTicker();
 refreshAccount();
 refreshPositions();
 refreshOrders();
+refreshStrategyStatus();

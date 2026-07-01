@@ -60,6 +60,34 @@
         </div>
       </div>
 
+      <!-- 自動策略 -->
+      <div class="panel">
+        <div class="panel-header">
+          <span>自動策略（缠論訊號自動下單）</span>
+        </div>
+        <div class="form-row">
+          <label>單筆風險</label>
+          <select id="strategy-risk">
+            <option value="0.005">0.5%</option>
+            <option value="0.01" selected>1%</option>
+            <option value="0.02">2%</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>槓桿</label>
+          <select id="strategy-leverage">
+            <option value="1">1x</option>
+            <option value="3">3x</option>
+            <option value="5">5x</option>
+            <option value="10" selected>10x</option>
+            <option value="20">20x</option>
+          </select>
+        </div>
+        <button id="strategy-toggle-btn" class="submit-btn long" onclick="toggleStrategy()">▶ 啟動自動策略</button>
+        <div id="strategy-msg" class="order-msg"></div>
+        <div id="strategy-status" style="font-size:11px;color:#8b949e;margin-top:6px">未啟動</div>
+      </div>
+
       <!-- 下單 -->
       <div class="panel">
         <div class="panel-header"><span>下單</span></div>
