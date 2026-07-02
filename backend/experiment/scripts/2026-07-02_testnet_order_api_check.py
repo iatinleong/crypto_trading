@@ -8,9 +8,10 @@
 事前準備：
 1. 到 https://testnet.binancefuture.com 用獨立帳號登入（跟正式幣安帳號分開），
    在 API Management 申請一組 Testnet 專用 API Key/Secret。
-2. 設定環境變數（不要寫進程式碼或commit）：
-     Windows PowerShell:  $env:BINANCE_TESTNET_API_KEY="..."; $env:BINANCE_TESTNET_API_SECRET="..."
-     bash:                export BINANCE_TESTNET_API_KEY=...  BINANCE_TESTNET_API_SECRET=...
+2. 寫進 backend/.env（已在 .gitignore，不會進git）：
+     BINANCE_TESTNET_API_KEY=...
+     BINANCE_TESTNET_API_SECRET=...
+   （或用環境變數也行，.env 沒設到的話會 fallback 讀 os.environ 既有的值）
 3. Testnet 帳戶預設會有模擬 USDT 餘額，若沒有可以在網站上用水龍頭（faucet）領取。
 
 執行方式：在 backend/ 目錄下 `python experiment/scripts/2026-07-02_testnet_order_api_check.py`
@@ -27,6 +28,10 @@ import time
 import urllib.parse
 
 import httpx
+from dotenv import load_dotenv
+
+# backend/.env（跟 main.py 未來若要讀 BINANCE_API_KEY 走同一個檔案、同一個位置）
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 BASE_URL = "https://testnet.binancefuture.com"
 API_KEY = os.environ.get("BINANCE_TESTNET_API_KEY")
