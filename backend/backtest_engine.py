@@ -732,6 +732,7 @@ def run_backtest(
     trailing_tp:          bool = False,  # True：啟用移動止盈（達到獲利門檻後，止盈目標隨最優價位往更遠處延伸）
     trailing_tp_activate_r: float = 1.0,  # 移動止盈啟動門檻（以R為單位）
     trailing_tp_distance_r: float = 1.0,  # 啟動後，止盈目標與目前最優價位維持的距離（以R為單位，目標會持續被往外推）
+    slippage_pct:          float = 0.0,   # 進出場不利滑價（例如0.0003＝0.03%），開倉/平倉一律往對自己不利的方向偏移
 ) -> Dict[str, Any]:
     """
     funding_map: 由 Binance /fapi/v1/fundingRate 取得的歷史費率 dict。
@@ -764,6 +765,17 @@ def run_backtest(
         """依方向計算單次結算的資金費用（正值＝成本，負值＝收入）。"""
         rate = _funding_rate_at(settle_time)
         return notional * rate if side == "BUY" else -notional * rate
+
+    def _slip(price: float, side: str, closing: bool) -> float:
+        """
+        往對自己不利的方向偏移 slippage_pct：開多／平空 = 買方，價格往上偏才不利；
+        開空／平多 = 賣方，價格往下偏才不利。closing=True 代表這次成交是為了平倉
+        （方向與 side 相反），closing=False 代表是照 side 方向開倉。
+        """
+        if slippage_pct <= 0:
+            return price
+        worse_is_lower = (side == "BUY") == closing
+        return price * (1 - slippage_pct) if worse_is_lower else price * (1 + slippage_pct)
 
     capital      = initial_capital
     trades:       List[Dict] = []
@@ -830,14 +842,14 @@ def run_backtest(
 
             if active["side"] == "BUY":
                 if k["low"] <= active["sl"]:
-                    hit_sl = True; exit_price = active["sl"]
+                    hit_sl = True; exit_price = _slip(active["sl"], active["side"], closing=True)
                 elif check_tp and k["high"] >= tp_before_update:
-                    hit_tp = True; exit_price = tp_before_update
+                    hit_tp = True; exit_price = _slip(tp_before_update, active["side"], closing=True)
             else:
                 if k["high"] >= active["sl"]:
-                    hit_sl = True; exit_price = active["sl"]
+                    hit_sl = True; exit_price = _slip(active["sl"], active["side"], closing=True)
                 elif check_tp and k["low"] <= tp_before_update:
-                    hit_tp = True; exit_price = tp_before_update
+                    hit_tp = True; exit_price = _slip(tp_before_update, active["side"], closing=True)
 
             if hit_sl or hit_tp:
                 exit_fee = active["qty"] * exit_price * taker_fee
@@ -868,7 +880,7 @@ def run_backtest(
             # 反手邏輯：持倉中若出現反方向新訊號，立即以該訊號的進場價平掉現有倉位，
             # 讓下方「開新倉」區塊用同一個訊號反手開反方向倉（同方向訊號仍照舊忽略，不加倉）
             if active is not None and reversal_on_opposite and i in sig_map and sig_map[i]["side"] != active["side"]:
-                exit_price = sig_map[i]["entry"]
+                exit_price = _slip(sig_map[i]["entry"], active["side"], closing=True)
                 exit_fee = active["qty"] * exit_price * taker_fee
                 if active["side"] == "BUY":
                     raw_pnl = active["qty"] * (exit_price - active["entry"])
@@ -894,7 +906,7 @@ def run_backtest(
         # ── 開新倉 ──────────────────────────────────────────────────────────
         if active is None and i in sig_map:
             sig = sig_map[i]
-            entry  = sig["entry"]
+            entry  = _slip(sig["entry"], sig["side"], closing=False)
             sl_prc = sig["sl"]
             sl_dist = abs(entry - sl_prc)
             if sl_dist < entry * 0.0001:
@@ -1016,6 +1028,7 @@ def full_analysis(
     funding_map:          Optional[Dict[int, float]] = None,
     filter_counter_trend: bool = False,
     reversal_on_opposite: bool = True,   # 持倉中出現反方向訊號時，立即平倉反手（實測用真實資料驗證過是正面改動）
+    slippage_pct:         float = 0.001, # 進出場不利滑價，預設0.1%（BTCUSDT正常~壓力情境交界，偏保守假設，見陷阱4.x）
 ) -> Dict[str, Any]:
     # 前端K棒圖 / MACD副圖一律顯示原始K棒，跟回測執行（進場、SL/TP、資金費）用同一份資料
     closes = [k["close"] for k in klines]
@@ -1038,6 +1051,7 @@ def full_analysis(
         klines, signals, initial_capital, leverage, risk_pct, interval,
         taker_fee=taker_fee, funding_map=funding_map,
         reversal_on_opposite=reversal_on_opposite,
+        slippage_pct=slippage_pct,
     )
 
     return {

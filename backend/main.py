@@ -105,18 +105,22 @@ async def strategy_loop():
                 price_cache[symbol] = current_price
                 account = engine.get_account(price_cache)
 
-                # 反手時，即將平倉的舊倉位保證金會在同一張單裡釋放出來，計算新倉位的
-                # 保證金上限時要把它算進可用資金，才能跟回測「先平倉、用平倉後的資金開新倉」一致
+                # 反手時，即將平倉的舊倉位保證金＋已實現損益會在同一張單裡釋放出來，計算
+                # 新倉位的風險額度與保證金上限都要把它算進可用資金，才能跟回測「先平倉、
+                # 用平倉後的資金開新倉」一致
                 effective_available = account["availableBalance"]
                 if existing_pos:
-                    effective_available += existing_pos["margin"]
+                    old_pnl = (abs(existing_pos["amt"]) * (current_price - existing_pos["avg_price"])
+                               * (1 if existing_pos["amt"] > 0 else -1))
+                    effective_available += existing_pos["margin"] + old_pnl
 
-                risk_amount = account["totalWalletBalance"] * cfg["risk_pct"]
+                # 風險額度／保證金上限都用 effective_available（不含其他幣對鎖住的保證金）
+                # 而非 totalWalletBalance，因為實測允許同時對多個幣對啟動策略，若用總資產當
+                # 基準，各策略會各自以為能用到全部風險額度，加總起來可能遠超單一回測模型
+                # （回測天生單幣對，totalWalletBalance 在多策略同時運行時等於把其他幣對鎖住
+                # 的保證金也算進這個幣對的風險基數，會讓實盤倉位比回測模型算的更大）
+                risk_amount = effective_available * cfg["risk_pct"]
                 qty = risk_amount / sl_dist
-
-                # 保證金上限：用 availableBalance（尚未被任何持倉鎖住的自由資金）而非
-                # totalWalletBalance，因為實測允許同時對多個幣對啟動策略，若用總資產當
-                # 基準，各策略會各自以為能用到 20% 總資產，加總起來可能遠超單一回測模型
                 notional = qty * current_price
                 margin   = notional / cfg["leverage"]
                 max_margin = effective_available * 0.20

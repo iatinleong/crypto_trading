@@ -155,6 +155,20 @@ VARIANTS = {
         reversal_on_opposite=True,
         trailing_stop=True, trailing_activate_r=0.2, trailing_distance_r=0.2,
         tp_multiplier=2.0),
+
+    # ── 滑價模型：進出場一律往不利方向偏移，量化對績效的實際影響 ─────────────────
+    "反手開倉+滑價0%（對照）": dict(
+        reversal_on_opposite=True, slippage_pct=0.0),
+    "反手開倉+滑價0.02%": dict(
+        reversal_on_opposite=True, slippage_pct=0.0002),
+    "反手開倉+滑價0.03%": dict(
+        reversal_on_opposite=True, slippage_pct=0.0003),
+    "反手開倉+滑價0.05%": dict(
+        reversal_on_opposite=True, slippage_pct=0.0005),
+    "反手開倉+移動止損窄(0.2R/0.2R)+滑價0.03%": dict(
+        reversal_on_opposite=True,
+        trailing_stop=True, trailing_activate_r=0.2, trailing_distance_r=0.2,
+        slippage_pct=0.0003),
 }
 
 
