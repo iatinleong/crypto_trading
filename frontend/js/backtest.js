@@ -7,11 +7,17 @@ const API = window.location.origin;
 // 週期對應每根K棒的小時數（跟後端 backtest_engine.py 的 INTERVAL_HOURS 保持一致）
 const INTERVAL_HOURS = { '15m': 15/60, '30m': 0.5, '1h': 1, '4h': 4, '1d': 24 };
 // 區間 token 對應的總小時數
-const RANGE_HOURS = { '3m': 3*30*24, '6m': 6*30*24, '1y': 365*24, '2y': 2*365*24, '3y': 3*365*24 };
+const RANGE_HOURS = { '3m': 3*30*24, '6m': 6*30*24, '1y': 365*24, '2y': 2*365*24, '3y': 3*365*24, '4y': 4*365*24 };
 
 function resolveLimit(rawValue, interval) {
+  const hoursPerCandle = INTERVAL_HOURS[interval] || 1;
+  if (rawValue === 'since2022') {
+    // 動態算「2022-01-01 UTC 至今」的小時數，不用寫死常數，時間一久也不會過期
+    const since = Date.UTC(2022, 0, 1) / 1000;
+    const hours = (Date.now() / 1000 - since) / 3600;
+    return Math.ceil(hours / hoursPerCandle);
+  }
   if (RANGE_HOURS[rawValue]) {
-    const hoursPerCandle = INTERVAL_HOURS[interval] || 1;
     return Math.ceil(RANGE_HOURS[rawValue] / hoursPerCandle);
   }
   return parseInt(rawValue);
