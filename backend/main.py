@@ -400,6 +400,7 @@ class BacktestRequest(BaseModel):
     leverage: int = 10
     risk_pct: float = 0.01
     taker_fee: float = 0.0005
+    slippage_pct: float = 0.001
 
 
 @app.post("/api/backtest")
@@ -423,6 +424,7 @@ async def run_backtest_api(req: BacktestRequest):
             interval=req.interval,
             taker_fee=req.taker_fee,
             funding_map=funding_map,
+            slippage_pct=req.slippage_pct,
         )
         result["klines"] = klines
         return result

@@ -417,6 +417,7 @@ async function startBacktest() {
   const leverage = parseInt(document.getElementById('bt-leverage').value);
   const riskPct  = parseFloat(document.getElementById('bt-risk').value);
   const takerFee = parseFloat(document.getElementById('bt-fee').value);
+  const slippage = parseFloat(document.getElementById('bt-slippage').value);
 
   if (!capital || capital < 100) {
     showStatus('本金至少 $100', 'err'); return;
@@ -436,6 +437,7 @@ async function startBacktest() {
         leverage,
         risk_pct: riskPct,
         taker_fee: takerFee,
+        slippage_pct: slippage,
       }),
     });
 
