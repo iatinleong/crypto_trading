@@ -15,10 +15,12 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from kline_cache import _read_klines_sync, _read_funding_sync
-from backtest_engine import (
-    handle_inclusion, compute_macd, detect_fractals, detect_bi, detect_duan,
-    detect_zhongshu, generate_signals, run_backtest,
+from indicators import compute_macd
+from strategies.chanlun import (
+    handle_inclusion, detect_fractals, detect_bi, detect_duan,
+    detect_zhongshu, generate_signals,
 )
+from backtest_engine import run_backtest
 
 
 def load(symbol, interval, limit):
