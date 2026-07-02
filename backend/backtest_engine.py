@@ -389,7 +389,7 @@ def generate_signals(
             tp_raw = bi["start_price"]
             # 若有中枢阻力則取最近的
             zs_res = [z["zh"] for z in zhongshu_list
-                      if z["zh"] > entry and z["start_index"] < end_idx]
+                      if z["zh"] > entry and z["end_index"] <= end_idx]
             tp = min(zs_res) if zs_res else tp_raw
             if tp <= entry:                                 # 保底 2:1 R:R
                 tp = round(entry + (entry - sl) * 2, 4)
@@ -408,7 +408,7 @@ def generate_signals(
             sl = round(frac_high * 1.0030, 2)              # 分型高點上方 0.3%
             tp_raw = bi["start_price"]
             zs_sup = [z["zl"] for z in zhongshu_list
-                      if z["zl"] < entry and z["start_index"] < end_idx]
+                      if z["zl"] < entry and z["end_index"] <= end_idx]
             tp = max(zs_sup) if zs_sup else tp_raw
             if tp >= entry:
                 tp = round(entry - (sl - entry) * 2, 4)
@@ -439,7 +439,7 @@ def generate_signals(
             sl = round(b2_bi["end_price"] * 0.9970, 2)
             tp_raw = b2_bi["start_price"]
             zs_res = [z["zh"] for z in zhongshu_list
-                      if z["zh"] > entry and z["start_index"] < b2_bi["end"]["index"]]
+                      if z["zh"] > entry and z["end_index"] <= b2_bi["end"]["index"]]
             tp = min(zs_res) if zs_res else tp_raw
             if tp <= entry:
                 tp = round(entry + (entry - sl) * 2, 4)
@@ -454,7 +454,7 @@ def generate_signals(
             sl = round(b2_bi["end_price"] * 1.0030, 2)
             tp_raw = b2_bi["start_price"]
             zs_sup = [z["zl"] for z in zhongshu_list
-                      if z["zl"] < entry and z["start_index"] < b2_bi["end"]["index"]]
+                      if z["zl"] < entry and z["end_index"] <= b2_bi["end"]["index"]]
             tp = max(zs_sup) if zs_sup else tp_raw
             if tp >= entry:
                 tp = round(entry - (sl - entry) * 2, 4)
@@ -723,6 +723,15 @@ def run_backtest(
     interval:        str   = "1h",
     taker_fee:       float = TAKER_FEE,          # 可自訂（VIP等級）
     funding_map:     Optional[Dict[int, float]] = None,  # {unix_sec: rate} 真實費率
+    margin_cap_pct:      float = 0.20,   # 單筆保證金上限（佔當時資金比例）
+    reversal_on_opposite: bool = False,  # True：持倉中出現反方向訊號時，立即平倉並反手開反方向倉
+    trailing_stop:        bool = False,  # True：啟用移動止損（達到獲利門檻後，止損隨最優價位上移/下移）
+    trailing_activate_r:  float = 1.0,   # 移動止損啟動門檻（以原始 R＝進場與止損距離為單位）
+    trailing_distance_r:  float = 1.0,   # 啟動後，止損與目前最優價位維持的距離（同樣以 R 為單位）
+    trailing_disable_fixed_tp: bool = False,  # True：啟用移動止損後不再檢查原始固定TP，只靠移動止損出場（純粹讓利潤奔跑）
+    trailing_tp:          bool = False,  # True：啟用移動止盈（達到獲利門檻後，止盈目標隨最優價位往更遠處延伸）
+    trailing_tp_activate_r: float = 1.0,  # 移動止盈啟動門檻（以R為單位）
+    trailing_tp_distance_r: float = 1.0,  # 啟動後，止盈目標與目前最優價位維持的距離（以R為單位，目標會持續被往外推）
 ) -> Dict[str, Any]:
     """
     funding_map: 由 Binance /fapi/v1/fundingRate 取得的歷史費率 dict。
@@ -778,20 +787,57 @@ def run_backtest(
                     active["funding_fees"] += _get_funding(settle_time, notional_now, active["side"])
                 active["last_funding_bucket"] = cur_bucket
 
-            # 止盈 / 止損判斷
+            tp_before_update = active["tp"]
+            # 移動止損／移動止盈共用「目前最優價位」的追蹤（只要任一功能開啟就要更新）
+            if trailing_stop or trailing_tp:
+                sl_dist0 = active["sl_dist"]
+                if active["side"] == "BUY":
+                    active["best_price"] = max(active.get("best_price", active["entry"]), k["high"])
+                    profit_r = (active["best_price"] - active["entry"]) / sl_dist0
+                else:
+                    active["best_price"] = min(active.get("best_price", active["entry"]), k["low"])
+                    profit_r = (active["entry"] - active["best_price"]) / sl_dist0
+
+                # 移動止損：達到 trailing_activate_r 個 R 的獲利後，止損跟著最優價位移動，
+                # 與最優價位維持 trailing_distance_r 個 R 的距離（只會往有利方向移動，不會鬆開）
+                if trailing_stop and profit_r >= trailing_activate_r:
+                    if active["side"] == "BUY":
+                        candidate_sl = active["best_price"] - trailing_distance_r * sl_dist0
+                        if candidate_sl > active["sl"]:
+                            active["sl"] = candidate_sl
+                    else:
+                        candidate_sl = active["best_price"] + trailing_distance_r * sl_dist0
+                        if candidate_sl < active["sl"]:
+                            active["sl"] = candidate_sl
+
+                # 移動止盈：達到 trailing_tp_activate_r 個 R 的獲利後，止盈目標跟著最優價位
+                # 往更遠處延伸，維持 trailing_tp_distance_r 個 R 的距離（目標只會往外推，不會縮回）
+                if trailing_tp and profit_r >= trailing_tp_activate_r:
+                    if active["side"] == "BUY":
+                        candidate_tp = active["best_price"] + trailing_tp_distance_r * sl_dist0
+                        if candidate_tp > active["tp"]:
+                            active["tp"] = candidate_tp
+                    else:
+                        candidate_tp = active["best_price"] - trailing_tp_distance_r * sl_dist0
+                        if candidate_tp < active["tp"]:
+                            active["tp"] = candidate_tp
+
+            # 止盈 / 止損判斷（trailing_disable_fixed_tp 開啟且未使用移動止盈時，完全不檢查
+            # 固定TP，只靠移動止損出場，讓利潤有機會超越原始結構性TP目標）
             hit_sl = hit_tp = False
             exit_price = 0.0
+            check_tp = trailing_tp or not (trailing_stop and trailing_disable_fixed_tp)
 
             if active["side"] == "BUY":
                 if k["low"] <= active["sl"]:
                     hit_sl = True; exit_price = active["sl"]
-                elif k["high"] >= active["tp"]:
-                    hit_tp = True; exit_price = active["tp"]
+                elif check_tp and k["high"] >= tp_before_update:
+                    hit_tp = True; exit_price = tp_before_update
             else:
                 if k["high"] >= active["sl"]:
                     hit_sl = True; exit_price = active["sl"]
-                elif k["low"] <= active["tp"]:
-                    hit_tp = True; exit_price = active["tp"]
+                elif check_tp and k["low"] <= tp_before_update:
+                    hit_tp = True; exit_price = tp_before_update
 
             if hit_sl or hit_tp:
                 exit_fee = active["qty"] * exit_price * taker_fee
@@ -819,6 +865,32 @@ def run_backtest(
                 active = None
                 equity_curve.append({"time": k["time"], "equity": capital})
 
+            # 反手邏輯：持倉中若出現反方向新訊號，立即以該訊號的進場價平掉現有倉位，
+            # 讓下方「開新倉」區塊用同一個訊號反手開反方向倉（同方向訊號仍照舊忽略，不加倉）
+            if active is not None and reversal_on_opposite and i in sig_map and sig_map[i]["side"] != active["side"]:
+                exit_price = sig_map[i]["entry"]
+                exit_fee = active["qty"] * exit_price * taker_fee
+                if active["side"] == "BUY":
+                    raw_pnl = active["qty"] * (exit_price - active["entry"])
+                else:
+                    raw_pnl = active["qty"] * (active["entry"] - exit_price)
+                total_fees = active["entry_fee"] + exit_fee + active["funding_fees"]
+                net_pnl = raw_pnl - total_fees
+                capital += active["margin"] + net_pnl
+                trades.append({**active,
+                    "exit_price":  exit_price,
+                    "exit_time":   k["time"],
+                    "exit_index":  i,
+                    "exit_reason": "REVERSAL",
+                    "raw_pnl":     raw_pnl,
+                    "total_fees":  total_fees,
+                    "pnl":         net_pnl,
+                    "pnl_pct":     net_pnl / active["margin"] * 100 if active["margin"] > 0 else 0,
+                    "exit_fee":    exit_fee,
+                })
+                equity_curve.append({"time": k["time"], "equity": capital})
+                active = None
+
         # ── 開新倉 ──────────────────────────────────────────────────────────
         if active is None and i in sig_map:
             sig = sig_map[i]
@@ -833,8 +905,8 @@ def run_backtest(
             notional    = qty * entry
             margin      = notional / leverage
 
-            if margin > capital * 0.20:
-                margin   = capital * 0.20
+            if margin > capital * margin_cap_pct:
+                margin   = capital * margin_cap_pct
                 notional = margin * leverage
                 qty      = notional / entry
 
@@ -850,6 +922,7 @@ def run_backtest(
                 "entry":       entry,
                 "sl":          sl_prc,
                 "tp":          sig["tp"],
+                "sl_dist":     sl_dist,
                 "qty":         qty,
                 "notional":    notional,
                 "margin":      margin,
@@ -942,6 +1015,7 @@ def full_analysis(
     taker_fee:            float = TAKER_FEE,
     funding_map:          Optional[Dict[int, float]] = None,
     filter_counter_trend: bool = False,
+    reversal_on_opposite: bool = True,   # 持倉中出現反方向訊號時，立即平倉反手（實測用真實資料驗證過是正面改動）
 ) -> Dict[str, Any]:
     # 前端K棒圖 / MACD副圖一律顯示原始K棒，跟回測執行（進場、SL/TP、資金費）用同一份資料
     closes = [k["close"] for k in klines]
@@ -963,6 +1037,7 @@ def full_analysis(
     bt            = run_backtest(
         klines, signals, initial_capital, leverage, risk_pct, interval,
         taker_fee=taker_fee, funding_map=funding_map,
+        reversal_on_opposite=reversal_on_opposite,
     )
 
     return {
