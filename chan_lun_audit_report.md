@@ -22,6 +22,7 @@
 | **P2** | 回測引擎 | 移動止盈（trailing TP）同棒更新即檢查，目標恆無法觸及 | **已修復** (Resolved) | 新增 `tp_before_update` 快取上一根K棒結束時定案的舊目標，本棒先用舊值判定是否觸價，判定後才用本棒資訊推算下一根棒的新目標，避免「先推遠、後拿同一根棒的極值反查」的自我循環（詳見 Section 4.6）。此功能目前僅存在於 `run_backtest()` 的實驗參數，尚未部署至 `full_analysis()`／`strategy_loop()` 實盤路徑。 |
 | **P2** | 回測引擎 | 缺乏滑價模型，SL/TP/反手一律假設精確成交 | **已修復** (Resolved) | 新增 `slippage_pct` 參數與 `_slip()` helper，開倉、SL/TP出場、反手平倉都往對自己不利的方向偏移。`full_analysis()` 預設 `slippage_pct=0.001`（0.1%，BTCUSDT「正常～壓力情境」交界的保守假設），`/api/backtest` 與 `strategy_loop()` 自動套用。實測影響：BTCUSDT 1h 反手開倉基準，0.03%滑價下 avg_R 從 0.612R 降到 0.524R（-14%），4h 僅降到 0.870R（-6.5%）；窄移動止損（0.2R/0.2R）因出場更頻繁，對滑價更敏感（1h avg_R 降22%），詳見 Section 4.10。 |
 | **P1** | 實時交易 | 自動下單風險額度用 `totalWalletBalance`，多幣對保證金互相污染、反手時序過時 | **已修復** (Resolved) | `strategy_loop()` 原本 `risk_amount = totalWalletBalance × risk_pct`，多幣對同時啟動策略時會把其他幣對鎖住的保證金也算進這個幣對的風險基數；反手時也用了「舊倉位還沒平倉」的過時帳戶快照，少算了舊倉位的已實現損益。已改用 `effective_available`（不含其他幣對保證金，反手時額外加回舊倉位保證金＋已實現損益），跟保證金上限用同一個基準，也跟回測「先平倉、用平倉後資金開新倉」的邏輯一致，詳見 Section 4.11。 |
+| **P1** | 實盤下單（階段二／未來執行模組） | Binance 已將條件單（STOP_MARKET/TAKE_PROFIT_MARKET等）遷移到新 Algo Order API，舊端點下SL/TP會直接失敗 | **已修復**（Testnet連通性測試腳本） | Binance 於 2025-12-09 把 STOP_MARKET/TAKE_PROFIT_MARKET/STOP/TAKE_PROFIT/TRAILING_STOP_MARKET 這幾種條件單強制遷移到獨立的 Algo Service，舊的 `POST /fapi/v1/order` 不再接受這些type（回 `-4120`），必須改用 `POST /fapi/v1/algoOrder`（`algoType=CONDITIONAL`，`stopPrice`改名`triggerPrice`），查詢/撤銷也要另外呼叫 `openAlgoOrders`/`algoOpenOrders`，跟一般掛單是分開兩本簿子。已在 `backend/experiment/scripts/2026-07-02_testnet_order_api_check.py` 修正並於 Testnet 端到端驗證通過（詳見 Section 4.12）。**這是外部API的破壞性變更，不是本專案程式碼的錯，但影響任何未來要下真實SL/TP單的執行模組（`binance_execution.py`），必須用新API。** |
 
 ---
 
@@ -131,3 +132,11 @@
 ### 陷阱 4.11：自動下單風險額度用了含其他幣對保證金、時序過時的帳戶快照 (風險額度污染雷區)
 * **現象**：`strategy_loop()` 原本 `risk_amount = account["totalWalletBalance"] * risk_pct`，而 `totalWalletBalance = self.balance + total_margin` 是**系統全部幣對**鎖住的保證金加總，不是這個幣對自己的。多個幣對同時啟動策略時，其他幣對的持倉保證金會被誤算進這個幣對的風險基數，讓實際下單的倉位比單幣對回測模型算出來的更大——跟陷阱4.5是同一類問題，但4.5修的是保證金上限的基準，這裡是風險額度（決定`qty`）本身的基準，之前沒被一起修到。另外，反手開倉時是用「舊倉位還沒平倉」的帳戶快照去算新倉位的`risk_amount`，沒把舊倉位即將實現的損益算進去，跟回測「先平倉、損益入帳，才用新資金算新倉位風險」的順序對不上。
 * **避坑指南**：`risk_amount`跟保證金上限務必用同一個基準——已改用 `effective_available`（=`availableBalance`，不含其他幣對鎖住的保證金；反手時額外加回舊倉位的保證金+即將實現的損益）。任何「這個幣對的風險/倉位計算」都不該用系統全域的帳戶總覽欄位，要精算「排除其他幣對佔用、排除即將被本次操作釋放的資源之前/之後」到底該用哪個時間點的快照。
+
+### 陷阱 4.12：拿舊版 STOP_MARKET/TAKE_PROFIT_MARKET 端點下條件單 (Algo Order遷移雷區)
+* **現象**：用 `POST /fapi/v1/order` 下 `type=STOP_MARKET`/`TAKE_PROFIT_MARKET`（`closePosition=true`）的止損/止盈單，在 Testnet 上直接被拒絕：`-4120 Order type not supported for this endpoint. Please use the Algo Order API endpoints instead.`。查證 Binance 官方文件（見下方Sources）確認：Binance 已於 **2025-12-09** 把 STOP_MARKET/TAKE_PROFIT_MARKET/STOP/TAKE_PROFIT/TRAILING_STOP_MARKET 這幾種條件單類型，強制遷移到獨立的 Algo Service，舊端點不再支援。這是外部API的破壞性變更，不是本專案程式碼寫錯，但如果不知道這件事，未來寫真實下單模組（`binance_execution.py`）時會直接卡死在第一次設SL/TP。
+* **避坑指南**：條件單一律改用 `POST /fapi/v1/algoOrder`，帶 `algoType=CONDITIONAL`，且參數名 `stopPrice` 改成了 `triggerPrice`（其餘 `closePosition`/`reduceOnly` 語意不變，`closePosition=true`一樣不能帶`quantity`）。查詢用 `GET /fapi/v1/openAlgoOrders`（不是`openOrders`——一般單跟algo單是分開兩本簿子），撤單用 `DELETE /fapi/v1/algoOpenOrders`（不是`allOpenOrders`）。強平/平倉後若要仿照陷阱4.4的教訓去撤剩餘掛單，記得兩本簿子都要撤，只撤一本會漏。已在 `backend/experiment/scripts/2026-07-02_testnet_order_api_check.py` 修正並於 Testnet 端到端驗證：全部19個請求皆回200，收尾持倉與兩本掛單簿都乾淨歸零。
+
+### 陷阱 4.13：本機時鐘漂移導致signed request被拒 (時間戳過期雷區)
+* **現象**：所有 signed request 都在合法簽名的情況下被拒絕：`-1021 Timestamp for this request is outside of the recvWindow`。查證後發現本機（Windows）時鐘讀出來的時間比 Binance 伺服器時間慢了約5.3秒——這不是網路延遲（正常網路延遲是幾十~幾百毫秒等級，5.3秒的延遲不合理），是本機作業系統時鐘本身飄移了。Windows 預設不會頻繁自動對時，累積漂移超過 `recvWindow`（本腳本設5000ms）就會讓所有簽名正確、格式正確的請求一律被拒——這個錯誤訊息很容易被誤判成「Key不對」或「簽名寫錯」，浪費時間去查錯地方（上一輪就先誤以為是Key本身的問題）。
+* **避坑指南**：任何要對 Binance signed API 下單的模組，啟動時應該先打一次公開端點 `GET /fapi/v1/time` 取得伺服器時間，跟本機時間算出offset，往後每個請求的 `timestamp` 都加上這個offset校正，不要單純依賴 `time.time()`，也不需要去改作業系統本身的時鐘設定（治標更快、更不會影響其他系統服務）。若想根治本機時鐘本身的問題，可在 Windows 執行 `w32tm /resync` 強制重新對時。
