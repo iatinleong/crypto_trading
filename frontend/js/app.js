@@ -304,6 +304,19 @@ async function refreshTicker() {
   } catch (e) { /* ignore */ }
 }
 
+// ── 資金費率（即時，會隨市場變動，8h結算一次但預測值持續更新）───────────
+
+async function refreshFunding() {
+  try {
+    const res = await fetch(`${API}/api/funding?symbol=${currentSymbol}`);
+    const d = await res.json();
+    const rate = d.funding_rate * 100;
+    const el = document.getElementById('acc-funding');
+    el.textContent = `${rate >= 0 ? '+' : ''}${rate.toFixed(4)}%`;
+    el.className = rate >= 0 ? 'pos' : 'neg';
+  } catch (e) { /* ignore */ }
+}
+
 // ── 帳戶（每次 tick 觸發，近乎即時）─────────────────────────────────────
 
 async function refreshAccount() {
@@ -328,12 +341,14 @@ async function refreshPositions() {
     const positions = await res.json();
     const tbody = document.getElementById('positions-body');
     if (!positions.length) {
-      tbody.innerHTML = '<tr><td colspan="11" class="empty">無持倉</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="13" class="empty">無持倉</td></tr>';
       return;
     }
     tbody.innerHTML = positions.map(p => {
       const isLong = p.positionAmt > 0;
       const pnl = p.unRealizedProfit;
+      const mr = p.marginRatio;
+      const mrClass = mr >= 80 ? 'neg' : (mr >= 50 ? 'warn' : '');
       return `<tr>
         <td>${p.symbol}</td>
         <td class="${isLong ? 'pos' : 'neg'}">${isLong ? '多' : '空'}</td>
@@ -342,6 +357,8 @@ async function refreshPositions() {
         <td>${fmt(p.markPrice)}</td>
         <td>${Math.abs(p.positionAmt)}</td>
         <td class="${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${fmt(pnl)} (${p.percentage.toFixed(2)}%)</td>
+        <td>$${fmt(p.margin)}</td>
+        <td class="${mrClass}">${mr.toFixed(2)}%</td>
         <td>${p.sl != null ? fmt(p.sl) : '—'}</td>
         <td>${p.tp != null ? fmt(p.tp) : '—'}</td>
         <td class="neg">${fmt(p.liqPrice)}</td>
@@ -463,7 +480,7 @@ async function resetAccount() {
 
 document.getElementById('symbol-select').addEventListener('change', e => {
   currentSymbol = e.target.value;
-  loadKlines(); connectWS(); refreshTicker(); refreshPositions(); refreshOrders(); refreshStrategyStatus();
+  loadKlines(); connectWS(); refreshTicker(); refreshFunding(); refreshPositions(); refreshOrders(); refreshStrategyStatus();
   refreshTradeOverlayData(); refreshLiveAnalysis();
 });
 
@@ -562,6 +579,7 @@ async function toggleStrategy() {
 // ── 定期刷新委託單（不走 tick，因為限價單觸發後需要更新）─────────────────
 setInterval(refreshOrders, 3000);
 setInterval(refreshTicker, 5000);
+setInterval(refreshFunding, 10000);
 setInterval(refreshStrategyStatus, 5000);
 setInterval(refreshTradeOverlayData, 5000);
 setInterval(refreshLiveAnalysis, 5000);
@@ -572,6 +590,7 @@ initChart();
 loadKlines();
 connectWS();
 refreshTicker();
+refreshFunding();
 refreshAccount();
 refreshPositions();
 refreshOrders();

@@ -345,6 +345,7 @@ td {
 /* ── Colors ── */
 .pos { color: var(--green); }
 .neg { color: var(--red); }
+.warn { color: var(--yellow, #f0b90b); }
 
 .cancel-btn {
   padding: 2px 8px;

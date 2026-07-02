@@ -53,12 +53,22 @@ async def strategy_loop():
     就用目前市價自動下單（帶入該訊號的 SL/TP），倉位大小依單筆風險 risk_pct 反推。
     每輪不管有沒有下單都會更新 last_checked_at（心跳）跟 last_analysis（笔/線段/中枢），
     讓前端可以顯示「上次檢查時間」並把目前結構畫在即時K線圖上。
+
+    反手開倉（跟回測 reversal_on_opposite 一致）：若持倉方向跟最新訊號相反，不是忽略，
+    而是立即用同一張市價單先平掉舊倉位、再開新方向的倉位（PaperEngine._fill 的「反向開倉」
+    分支本來就支援單張order同時完成平倉+反手，見 quantity = 舊倉位量 + 新倉位量）。
+    同方向訊號仍照舊忽略、不加碼。
+
+    K棒視窗改用 get_klines_cached(..., 8000)（原本是 get_klines(..., limit=500)）：
+    B1/S1/B2/S2 的止盈選的是「視窗內最近的已確認中樞」，500根視窗常常只有 0~1 個中樞
+    可選，跟回測（動輒上萬根、數十個中樞）算出來的TP系統性不同；8000根能看到的中樞數量
+    多一個數量級，且用本地快取只需在每輪額外抓3根最新K棒，不會每輪都重新分頁拉全部歷史。
     """
     while True:
         for key, cfg in list(armed_strategies.items()):
             symbol, interval = key.split("/", 1)
             try:
-                klines = await market.get_klines(symbol, interval, limit=500)
+                klines = await market.get_klines_cached(symbol, interval, 8000)
                 if len(klines) < 50:
                     cfg["last_checked_at"] = time.time()
                     continue
@@ -76,8 +86,11 @@ async def strategy_loop():
                 if latest["index"] < len(klines) - 2:
                     continue  # 訊號不是剛發生的，不追歷史訊號
 
-                if symbol in engine.positions:
-                    continue  # 跟回測一致：同一幣對已有持倉時不追加新訊號
+                existing_pos = engine.positions.get(symbol)
+                if existing_pos:
+                    existing_side = "BUY" if existing_pos["amt"] > 0 else "SELL"
+                    if latest["side"] == existing_side:
+                        continue  # 同方向訊號不加碼，維持現行行為
 
                 sig_key = f"{latest['time']}_{latest['type']}"
                 if cfg.get("last_signal_key") == sig_key:
@@ -91,6 +104,13 @@ async def strategy_loop():
                 current_price = await market.get_price(symbol)
                 price_cache[symbol] = current_price
                 account = engine.get_account(price_cache)
+
+                # 反手時，即將平倉的舊倉位保證金會在同一張單裡釋放出來，計算新倉位的
+                # 保證金上限時要把它算進可用資金，才能跟回測「先平倉、用平倉後的資金開新倉」一致
+                effective_available = account["availableBalance"]
+                if existing_pos:
+                    effective_available += existing_pos["margin"]
+
                 risk_amount = account["totalWalletBalance"] * cfg["risk_pct"]
                 qty = risk_amount / sl_dist
 
@@ -99,19 +119,24 @@ async def strategy_loop():
                 # 基準，各策略會各自以為能用到 20% 總資產，加總起來可能遠超單一回測模型
                 notional = qty * current_price
                 margin   = notional / cfg["leverage"]
-                max_margin = account["availableBalance"] * 0.20
+                max_margin = effective_available * 0.20
                 if margin > max_margin:
                     margin   = max_margin
                     notional = margin * cfg["leverage"]
                     qty      = notional / current_price
 
+                # 反手：同一張單先平掉舊倉位的量，疊上新倉位的量，讓 PaperEngine 的
+                # 反向開倉邏輯一次處理（用同一個進場價完成平倉+反手，跟回測邏輯一致）
+                order_qty = qty + abs(existing_pos["amt"]) if existing_pos else qty
+
                 engine.place_order(
                     symbol=symbol, side=latest["side"], order_type="MARKET",
-                    quantity=qty, leverage=cfg["leverage"], current_price=current_price,
+                    quantity=order_qty, leverage=cfg["leverage"], current_price=current_price,
                     sl=latest["sl"], tp=latest["tp"], source=f"AUTO:{latest['type']}",
                 )
                 save_state(engine.to_dict())
-                print(f"[strategy] {key} 自動下單 {latest['type']} {latest['side']} qty={qty:.6f} @ {current_price}")
+                action = "反手開倉" if existing_pos else "自動下單"
+                print(f"[strategy] {key} {action} {latest['type']} {latest['side']} qty={qty:.6f} @ {current_price}")
             except Exception as e:
                 print(f"[strategy] {key}: {e}")
         await asyncio.sleep(15)
@@ -228,6 +253,14 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int =
 async def get_ticker(symbol: str = "BTCUSDT"):
     try:
         return await market.get_ticker(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/funding")
+async def get_funding(symbol: str = "BTCUSDT"):
+    try:
+        return await market.get_current_funding_rate(symbol)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

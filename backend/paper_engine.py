@@ -307,6 +307,9 @@ class PaperEngine:
             amt = pos["amt"]
             pnl = abs(amt) * (mark - pos["avg_price"]) * (1 if amt > 0 else -1)
             margin = pos["margin"]
+            notional = abs(amt) * mark
+            maintenance = notional * MAINTENANCE_MARGIN_RATE
+            margin_ratio = (maintenance / (margin + pnl) * 100) if (margin + pnl) > 0 else 100.0
             result.append({
                 "symbol": sym,
                 "positionAmt": amt,
@@ -316,6 +319,7 @@ class PaperEngine:
                 "percentage": (pnl / margin * 100) if margin > 0 else 0,
                 "leverage": pos["leverage"],
                 "margin": margin,
+                "marginRatio": margin_ratio,
                 "sl": pos.get("sl"),
                 "tp": pos.get("tp"),
                 "entryTime": pos.get("entry_time"),
